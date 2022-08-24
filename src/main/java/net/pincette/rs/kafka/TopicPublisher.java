@@ -5,6 +5,7 @@ import static java.util.concurrent.CompletableFuture.completedFuture;
 import static net.pincette.rs.Commit.commit;
 import static net.pincette.rs.FlattenList.flattenList;
 import static net.pincette.rs.Mapper.map;
+import static net.pincette.rs.kafka.Util.LOGGER;
 
 import java.util.Deque;
 import java.util.List;
@@ -67,6 +68,7 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
 
   private void emit(final List<ConsumerRecord<K, V>> batch) {
     more = false;
+    LOGGER.finest(() -> "Emit batch of size " + batch.size() + " from topic " + topic);
     preprocessor.onNext(batch);
   }
 
@@ -75,10 +77,12 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   }
 
   void next(final List<ConsumerRecord<K, V>> batch) {
-    if (more()) {
-      emit(batch);
-    } else {
-      batches.addFirst(batch);
+    if (!batch.isEmpty()) {
+      if (more()) {
+        emit(batch);
+      } else {
+        batches.addFirst(batch);
+      }
     }
   }
 

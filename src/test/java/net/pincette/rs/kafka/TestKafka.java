@@ -309,7 +309,7 @@ class TestKafka {
   @Test
   @DisplayName("resume")
   void resume() {
-    final int max = 1000;
+    final int max = 10000;
 
     fill(max, inTopic1);
 
@@ -320,13 +320,13 @@ class TestKafka {
         () ->
             new Mapper<>(
                 pair -> {
-                  if (pair.second == 453) {
+                  if (pair.second == 4530) {
                     throw new GeneralException("test");
                   }
 
                   return pair(pair.first, pair.second + 1);
                 }),
-        (start, end) -> end <= 453,
+        (start, end) -> end <= 4530,
         false);
 
     runProcessor(
@@ -414,6 +414,7 @@ class TestKafka {
             processor(publisher, inTopic2, outTopic2, incrementer.get(), false),
             generator(max, inTopic1),
             generator(max, inTopic2)))
+        .buffer(1000)
         .map(checkOrderProducer(inTopic1, -1, "merge at " + inTopic1))
         .map(checkOrderProducer(inTopic2, -1, "merge at " + inTopic2))
         .map(checkOrderProducer(outTopic1, 0, "merge at " + outTopic1))

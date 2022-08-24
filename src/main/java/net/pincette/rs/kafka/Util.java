@@ -126,6 +126,18 @@ public class Util {
     return value;
   }
 
+  static <T> T trace(final String message, final T value) {
+    LOGGER.finest(() -> message + ": " + value);
+
+    return value;
+  }
+
+  static <T> T trace(final Supplier<String> message, final T value) {
+    LOGGER.finest(() -> message.get() + ": " + value);
+
+    return value;
+  }
+
   private static CompletionStage<Boolean> waitFor(final Supplier<CompletionStage<Boolean>> check) {
     return net.pincette.util.Util.waitFor(waitForCondition(check), INTERVAL);
   }

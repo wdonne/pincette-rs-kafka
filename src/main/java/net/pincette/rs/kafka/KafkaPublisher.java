@@ -123,22 +123,22 @@ public class KafkaPublisher<K, V> {
   }
 
   private void commit() {
-    getConsumer()
-        .ifPresent(
-            c ->
-                getForever(
-                    () ->
-                        Optional.of(offsets(consumeHead(recordsToCommit)))
-                            .filter(offsets -> !offsets.isEmpty())
-                            .map(
-                                offsets ->
-                                    SideEffect.<Boolean>run(
-                                            () -> {
-                                              c.commitSync(trace(offsets));
+    getForever(
+        () ->
+            Optional.of(offsets(consumeHead(recordsToCommit)))
+                .filter(offsets -> !offsets.isEmpty())
+                .map(
+                    offsets ->
+                        SideEffect.<Boolean>run(
+                                () ->
+                                    getConsumer()
+                                        .ifPresent(
+                                            c -> {
+                                              c.commitSync(trace("Commit", offsets));
                                               removePendingCommits(offsets);
-                                            })
-                                        .andThenGet(() -> true))
-                            .orElse(false)));
+                                            }))
+                            .andThenGet(() -> true))
+                .orElse(false));
   }
 
   private void dispatch(final ConsumerRecords<K, V> records) {

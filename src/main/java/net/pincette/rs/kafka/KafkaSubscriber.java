@@ -1,6 +1,7 @@
 package net.pincette.rs.kafka;
 
 import static java.time.Duration.ofMillis;
+import static java.time.Duration.ofSeconds;
 import static java.util.Optional.ofNullable;
 import static java.util.concurrent.CompletableFuture.failedFuture;
 import static java.util.logging.Level.SEVERE;
@@ -8,7 +9,9 @@ import static net.pincette.rs.Per.per;
 import static net.pincette.rs.kafka.ProducerEvent.STOPPED;
 import static net.pincette.rs.kafka.Util.LOGGER;
 import static net.pincette.rs.kafka.Util.trace;
+import static net.pincette.util.Util.tryToGetForever;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
@@ -31,9 +34,11 @@ import org.apache.kafka.clients.producer.ProducerRecord;
  * @author Werner Donn\u00e9
  */
 public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
+  private static final Duration BACKOFF = ofSeconds(5);
+
   private final BiConsumer<ProducerEvent, KafkaProducer<K, V>> eventHandler;
   private final Processor<ProducerRecord<K, V>, List<ProducerRecord<K, V>>> preprocessor =
-      per(100, ofMillis(500));
+      per(500, ofMillis(500));
   private final Supplier<KafkaProducer<K, V>> producerSupplier;
   private boolean completed;
   private CompletableFuture<Void> future;
@@ -110,10 +115,13 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     private boolean sending;
     private Subscription subscription;
 
-    private void close() {
-      if (producer != null && !sending) {
-        producer.close();
+    private void close(boolean force) {
+      if (producer != null && (!sending || force)) {
+        final KafkaProducer<K, V> p = producer;
+
+        LOGGER.finest(() -> "Closing producer " + p);
         producer = null;
+        p.close();
       }
     }
 
@@ -127,7 +135,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
       if (!cancelled) {
         cancelled = true;
         sendEvent(STOPPED);
-        close();
+        close(false);
         completeFuture();
       }
     }
@@ -162,7 +170,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
         throw new GeneralException("onNext on completed stream");
       }
 
-      send(records).toCompletableFuture().join();
+      tryToGetForever(() -> send(records), BACKOFF, this::panic).toCompletableFuture().join();
       more();
     }
 
@@ -174,7 +182,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
 
     private void panic(final Exception exception) {
       LOGGER.log(SEVERE, exception.getMessage(), exception);
-      close();
+      close(true);
     }
 
     private CompletionStage<Boolean> send(final List<ProducerRecord<K, V>> records) {
@@ -184,16 +192,16 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
                 sending = true;
 
                 for (int i = 0; i < records.size() - 1; ++i) {
-                  p.send(trace(records.get(i)));
+                  p.send(trace("Send record", records.get(i)));
                 }
 
-                return sendToKafka(trace(records.get(records.size() - 1)))
+                return sendToKafka(trace("Send record", records.get(records.size() - 1)))
                     .thenApply(
                         result -> {
                           sending = false;
 
                           if (completed) {
-                            close();
+                            close(false);
                           }
 
                           return result;
