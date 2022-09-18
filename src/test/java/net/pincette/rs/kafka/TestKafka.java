@@ -4,6 +4,7 @@ import static com.mongodb.client.model.Filters.eq;
 import static java.lang.Integer.MAX_VALUE;
 import static java.lang.Integer.parseInt;
 import static java.lang.String.valueOf;
+import static java.time.Duration.ofSeconds;
 import static java.util.concurrent.CompletableFuture.supplyAsync;
 import static net.pincette.mongo.Collection.findOne;
 import static net.pincette.mongo.Collection.replaceOne;
@@ -11,12 +12,9 @@ import static net.pincette.rs.Box.box;
 import static net.pincette.rs.Chain.with;
 import static net.pincette.rs.Pipe.pipe;
 import static net.pincette.rs.Util.generate;
-import static net.pincette.rs.Util.onComplete;
 import static net.pincette.rs.kafka.TestUtil.COMMON_CONFIG;
-import static net.pincette.rs.kafka.TestUtil.checkOffsets;
 import static net.pincette.rs.kafka.TestUtil.measure;
 import static net.pincette.rs.kafka.TestUtil.newTopic;
-import static net.pincette.rs.kafka.TestUtil.offsets;
 import static net.pincette.rs.kafka.TestUtil.producerEventHandler;
 import static net.pincette.rs.kafka.TestUtil.testComplete;
 import static net.pincette.rs.kafka.TestUtil.topic;
@@ -47,7 +45,6 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import net.pincette.rs.Async;
 import net.pincette.rs.Mapper;
-import net.pincette.rs.Merge;
 import net.pincette.rs.PassThrough;
 import net.pincette.util.Pair;
 import net.pincette.util.State;
@@ -69,10 +66,10 @@ class TestKafka {
       MongoClients.create("mongodb://localhost:27017")
           .getDatabase("test")
           .getCollection("test", BsonDocument.class);
-  private final String inTopic1 = topic();
-  private final String inTopic2 = topic();
-  private final String outTopic1 = topic();
-  private final String outTopic2 = topic();
+  private final String inTopic1 = topic("inTopic1");
+  private final String inTopic2 = topic("inTopic2");
+  private final String outTopic1 = topic("outTopic1");
+  private final String outTopic2 = topic("outTopic2");
   private final Set<String> topics = set(inTopic1, inTopic2, outTopic1, outTopic2);
 
   private static <T> Function<T, T> checkOrder(
@@ -306,83 +303,6 @@ class TestKafka {
         (start, end) -> end == start + max);
   }
 
-  @Test
-  @DisplayName("resume")
-  void resume() {
-    final int max = 10000;
-
-    fill(max, inTopic1);
-
-    runProcessor(
-        max,
-        inTopic1,
-        outTopic1,
-        () ->
-            new Mapper<>(
-                pair -> {
-                  if (pair.second == 4530) {
-                    throw new GeneralException("test");
-                  }
-
-                  return pair(pair.first, pair.second + 1);
-                }),
-        (start, end) -> end <= 4530,
-        false);
-
-    runProcessor(
-        max,
-        inTopic1,
-        outTopic1,
-        () -> new Mapper<>(pair -> pair(pair.first, pair.second + 1)),
-        (start, end) -> end == max,
-        true);
-  }
-
-  private void runProcessor(
-      final int max,
-      final String inTopic,
-      final String outTopic,
-      final Supplier<Processor<Pair<String, Integer>, Pair<String, Integer>>> incrementer,
-      final BiPredicate<Long, Long> offsetTest,
-      final boolean resume) {
-    final PassThrough<Integer> pass = new PassThrough<>();
-    final KafkaSubscriber<String, String> subscriber =
-        new KafkaSubscriber<String, String>()
-            .withProducer(TestUtil::producer)
-            .withEventHandler(
-                (e, p) -> {
-                  if (e == ProducerEvent.ERROR) {
-                    pass.cancel();
-                  }
-                });
-    final State<Map<TopicPartition, Long>> startOffsets = new State<>();
-    final KafkaPublisher<String, String> publisher =
-        new KafkaPublisher<String, String>()
-            .withConsumer(TestUtil::consumer)
-            .withEventHandler(
-                (e, c) -> {
-                  if (e == ConsumerEvent.STARTED) {
-                    if (!resume) {
-                      c.seekToBeginning(c.assignment());
-                    }
-
-                    startOffsets.set(offsets(c, set(inTopic)));
-                  } else if (e == ConsumerEvent.STOPPED) {
-                    assertTrue(
-                        checkOffsets(startOffsets.get(), offsets(c, set(inTopic)), offsetTest));
-                  }
-                })
-            .withTopics(set(inTopic, outTopic));
-
-    processor(publisher, inTopic, outTopic, incrementer.get(), resume).subscribe(subscriber);
-    with(flat(publisher, outTopic, max, resume))
-        .map(tester(resume))
-        .map(pass)
-        .get()
-        .subscribe(onComplete(publisher::stop));
-    publisher.start();
-  }
-
   private void runTest(
       final int max,
       final Supplier<Processor<Pair<String, Integer>, Pair<String, Integer>>> incrementer,
@@ -409,18 +329,22 @@ class TestKafka {
             .withEventHandler(producerEventHandler(startOffsets, topics, offsetTest))
             .withTopics(topics);
 
-    with(Merge.of(
-            processor(publisher, inTopic1, outTopic1, incrementer.get(), false),
-            processor(publisher, inTopic2, outTopic2, incrementer.get(), false),
-            generator(max, inTopic1),
-            generator(max, inTopic2)))
-        .buffer(1000)
-        .map(checkOrderProducer(inTopic1, -1, "merge at " + inTopic1))
-        .map(checkOrderProducer(inTopic2, -1, "merge at " + inTopic2))
+    with(processor(publisher, inTopic1, outTopic1, incrementer.get(), false))
         .map(checkOrderProducer(outTopic1, 0, "merge at " + outTopic1))
+        .get()
+        .subscribe(subscriber.branch());
+    with(processor(publisher, inTopic2, outTopic2, incrementer.get(), false))
         .map(checkOrderProducer(outTopic2, 0, "merge at " + outTopic2))
         .get()
-        .subscribe(subscriber);
+        .subscribe(subscriber.branch());
+    with(generator(max, inTopic1))
+        .map(checkOrderProducer(inTopic1, -1, "merge at " + inTopic1))
+        .get()
+        .subscribe(subscriber.branch());
+    with(generator(max, inTopic2))
+        .map(checkOrderProducer(inTopic2, -1, "merge at " + inTopic2))
+        .get()
+        .subscribe(subscriber.branch());
 
     final AtomicInteger stopped = new AtomicInteger(2);
 
@@ -436,6 +360,7 @@ class TestKafka {
         .subscribe(testComplete(publisher::stop, stopped));
 
     measure(publisher::start);
+    subscriber.stop(ofSeconds(1));
     assertTrue((!cancel && !cancelled.get()) || (cancel && cancelled.get()));
   }
 }

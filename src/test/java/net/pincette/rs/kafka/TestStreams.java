@@ -39,10 +39,10 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
 class TestStreams {
-  private final String inTopic1 = topic();
-  private final String inTopic2 = topic();
-  private final String outTopic1 = topic();
-  private final String outTopic2 = topic();
+  private final String inTopic1 = topic("inTopic1");
+  private final String inTopic2 = topic("inTopic2");
+  private final String outTopic1 = topic("outTopic1");
+  private final String outTopic2 = topic("outTopic2");
   private final Set<String> topics = set(inTopic1, inTopic2, outTopic1, outTopic2);
 
   private static Publisher<Message<String, String>> generator(final int max) {

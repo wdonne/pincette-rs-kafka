@@ -1,11 +1,13 @@
 package net.pincette.rs.kafka;
 
+import static java.lang.Integer.MAX_VALUE;
 import static java.time.Duration.ofSeconds;
 import static java.util.logging.Logger.getLogger;
 import static java.util.stream.Collectors.toSet;
 import static net.pincette.util.Collections.set;
 import static net.pincette.util.Pair.pair;
 import static net.pincette.util.StreamUtil.composeAsyncStream;
+import static net.pincette.util.Util.tryToGetForever;
 import static net.pincette.util.Util.waitForCondition;
 
 import java.time.Duration;
@@ -20,6 +22,7 @@ import java.util.logging.Logger;
 import net.pincette.rs.streams.TopicSink;
 import net.pincette.rs.streams.TopicSource;
 import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.DeleteTopicsOptions;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -60,12 +63,20 @@ public class Util {
    * @return The completion stage.
    */
   public static CompletionStage<Void> createTopics(final Set<NewTopic> topics, final Admin admin) {
-    return admin
-        .createTopics(new ArrayList<>(topics))
-        .all()
-        .toCompletionStage()
-        .thenComposeAsync(
-            r -> waitForTopicsPresent(topics.stream().map(NewTopic::name).collect(toSet()), admin));
+    return tryToGetForever(
+            () ->
+                admin
+                    .createTopics(new ArrayList<>(topics))
+                    .all()
+                    .toCompletionStage()
+                    .thenComposeAsync(
+                        r ->
+                            waitForTopicsPresent(
+                                topics.stream().map(NewTopic::name).collect(toSet()), admin))
+                    .thenApply(r -> true),
+            INTERVAL,
+            e -> deleteTopics(topics.stream().map(NewTopic::name).collect(toSet()), admin))
+        .thenAccept(r -> {});
   }
 
   /**
@@ -76,9 +87,20 @@ public class Util {
    * @return The completion stage.
    */
   public static CompletionStage<Void> deleteTopics(final Set<String> topics, final Admin admin) {
-    return presentTopics(topics, admin)
-        .thenComposeAsync(t -> admin.deleteTopics(t).all().toCompletionStage().thenApply(r -> t))
-        .thenComposeAsync(t -> waitForTopicsAbsent(t, admin));
+    return tryToGetForever(
+            () ->
+                presentTopics(topics, admin)
+                    .thenComposeAsync(
+                        t ->
+                            admin
+                                .deleteTopics(t, new DeleteTopicsOptions().timeoutMs(MAX_VALUE))
+                                .all()
+                                .toCompletionStage()
+                                .thenApply(r -> t))
+                    .thenComposeAsync(t -> waitForTopicsAbsent(t, admin))
+                    .thenApply(r -> true),
+            INTERVAL)
+        .thenAccept(r -> {});
   }
 
   private static CompletionStage<Boolean> describeTopic(

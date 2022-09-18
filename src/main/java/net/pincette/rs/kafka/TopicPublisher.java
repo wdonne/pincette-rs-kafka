@@ -16,7 +16,6 @@ import java.util.concurrent.Flow.Publisher;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.function.Consumer;
-import net.pincette.function.SideEffect;
 import net.pincette.rs.Pipe;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 
@@ -49,21 +48,20 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   }
 
   private CompletionStage<Boolean> commitRecords(final List<ConsumerRecord<K, V>> records) {
+    LOGGER.finest(
+        () -> "Publisher for topic " + topic + " receives " + records.size() + " to commit");
     records.forEach(commit);
 
     return completedFuture(true);
   }
 
   void complete() {
+    LOGGER.finest(() -> "Completing publisher for topic " + topic);
     completed = true;
-    more = false;
 
-    while (ofNullable(batches.pollLast())
-        .map(b -> SideEffect.<Boolean>run(() -> emit(b)).andThenGet(() -> true))
-        .isPresent())
-      ;
-
-    preprocessor.onComplete();
+    if (more) {
+      sendComplete();
+    }
   }
 
   private void emit(final List<ConsumerRecord<K, V>> batch) {
@@ -81,9 +79,15 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
       if (more()) {
         emit(batch);
       } else {
+        LOGGER.finest(() -> "Buffer batch of size " + batch.size() + " from topic " + topic);
         batches.addFirst(batch);
       }
     }
+  }
+
+  private void sendComplete() {
+    LOGGER.finest(() -> "Publisher for topic " + topic + " sends onComplete");
+    preprocessor.onComplete();
   }
 
   public void subscribe(final Subscriber<? super ConsumerRecord<K, V>> subscriber) {
@@ -97,9 +101,10 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
     }
 
     public void request(final long n) {
-      if (!completed) {
-        ofNullable(batches.pollLast())
-            .ifPresentOrElse(TopicPublisher.this::emit, () -> more = true);
+      ofNullable(batches.pollLast()).ifPresentOrElse(TopicPublisher.this::emit, () -> more = true);
+
+      if (completed) {
+        sendComplete();
       }
     }
   }

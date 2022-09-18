@@ -2,6 +2,7 @@ package net.pincette.rs.kafka;
 
 import static net.pincette.rs.Mapper.map;
 
+import java.time.Duration;
 import java.util.concurrent.Flow.Processor;
 import java.util.concurrent.Flow.Subscriber;
 import net.pincette.rs.streams.Message;
@@ -19,7 +20,12 @@ public class KafkaTopicSink<K, V> implements TopicSink<K, V, ProducerRecord<K, V
     return map(m -> new ProducerRecord<>(topic, m.key, m.value));
   }
 
+  @Override
+  public void stop(final Duration gracePeriod) {
+    subscriber.stop(gracePeriod);
+  }
+
   public Subscriber<ProducerRecord<K, V>> subscriber() {
-    return subscriber;
+    return subscriber.branch();
   }
 }

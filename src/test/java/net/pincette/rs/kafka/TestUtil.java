@@ -146,7 +146,7 @@ class TestUtil {
         });
   }
 
-  static String topic() {
-    return "test-" + randomUUID();
+  static String topic(final String name) {
+    return name + "-" + randomUUID();
   }
 }
