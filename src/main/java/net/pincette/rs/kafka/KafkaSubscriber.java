@@ -3,7 +3,6 @@ package net.pincette.rs.kafka;
 import static java.lang.Boolean.FALSE;
 import static java.time.Duration.ofMillis;
 import static java.time.Duration.ofSeconds;
-import static java.time.Instant.now;
 import static java.util.Optional.ofNullable;
 import static java.util.concurrent.CompletableFuture.allOf;
 import static java.util.concurrent.CompletableFuture.completedFuture;
