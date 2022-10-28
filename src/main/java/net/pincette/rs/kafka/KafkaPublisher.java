@@ -3,7 +3,6 @@ package net.pincette.rs.kafka;
 import static java.lang.Thread.sleep;
 import static java.time.Duration.ofMillis;
 import static java.time.Duration.ofSeconds;
-import static java.util.Optional.of;
 import static java.util.Optional.ofNullable;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.logging.Level.FINE;
@@ -14,7 +13,6 @@ import static java.util.stream.Collectors.toSet;
 import static net.pincette.rs.kafka.Util.LOGGER;
 import static net.pincette.rs.kafka.Util.trace;
 import static net.pincette.util.Collections.consumeHead;
-import static net.pincette.util.Collections.difference;
 import static net.pincette.util.Pair.pair;
 import static net.pincette.util.StreamUtil.stream;
 import static net.pincette.util.Util.tryToDo;
@@ -65,6 +63,7 @@ public class KafkaPublisher<K, V> {
   private final Supplier<KafkaConsumer<K, V>> consumerSupplier;
   private final BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> eventHandler;
   private final Map<TopicPartition, OffsetAndMetadata> pendingCommits = new ConcurrentHashMap<>();
+  private final Set<String> paused = new HashSet<>();
   private final Map<String, TopicPublisher<K, V>> publishers;
   private final Deque<ConsumerRecord<K, V>> recordsToCommit = new ConcurrentLinkedDeque<>();
   private final Set<String> topics;
@@ -102,6 +101,10 @@ public class KafkaPublisher<K, V> {
 
   private boolean allTopicsCancelled() {
     return cancelled.equals(topics);
+  }
+
+  private Set<TopicPartition> assigned(final String topic) {
+    return partitions(topic, consumer.assignment());
   }
 
   private void cancelTopic(final String topic) {
@@ -209,13 +212,11 @@ public class KafkaPublisher<K, V> {
   }
 
   private void pause(final String topic) {
-    of(difference(partitions(topic, consumer.assignment()), paused(topic)))
-        .filter(p -> !p.isEmpty())
-        .ifPresent(
-            p -> {
-              LOGGER.log(FINE, () -> "Pause " + topic);
-              consumer.pause(p);
-            });
+    if (!paused.contains(topic)) {
+      paused.add(topic);
+      LOGGER.log(FINE, () -> "Pause " + topic);
+      consumer.pause(assigned(topic));
+    }
   }
 
   private Set<TopicPartition> paused(final String topic) {
@@ -244,13 +245,11 @@ public class KafkaPublisher<K, V> {
   }
 
   private void resume(final String topic) {
-    of(paused(topic))
-        .filter(p -> !p.isEmpty())
-        .ifPresent(
-            p -> {
-              LOGGER.log(FINE, () -> "Resume " + topic);
-              consumer.resume(p);
-            });
+    if (paused.contains(topic)) {
+      LOGGER.log(FINE, () -> "Resume " + topic);
+      consumer.resume(paused(topic));
+      paused.remove(topic);
+    }
   }
 
   private void sendEvent(final ConsumerEvent event) {
