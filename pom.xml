@@ -6,7 +6,7 @@
 
   <groupId>net.pincette</groupId>
   <artifactId>pincette-rs-kafka</artifactId>
-  <version>1.0.6</version>
+  <version>1.0.7</version>
   <packaging>jar</packaging>
   <name>pincette-rs-kafka</name>
   <description>Pincette Reactive Streams Kafka</description>
@@ -60,12 +60,12 @@
     <dependency>
       <groupId>net.pincette</groupId>
       <artifactId>pincette-rs</artifactId>
-      <version>3.0.5</version>
+      <version>3.0.6</version>
     </dependency>
     <dependency>
       <groupId>net.pincette</groupId>
       <artifactId>pincette-rs-streams</artifactId>
-      <version>1.1.3</version>
+      <version>1.1.4</version>
     </dependency>
     <dependency>
       <groupId>org.apache.kafka</groupId>
@@ -81,7 +81,7 @@
     <dependency>
       <groupId>net.pincette</groupId>
       <artifactId>pincette-mongo</artifactId>
-      <version>4.0.8</version>
+      <version>4.0.9</version>
       <scope>test</scope>
     </dependency>
   </dependencies>
