@@ -12,6 +12,7 @@ import static net.pincette.rs.Per.per;
 import static net.pincette.rs.kafka.ProducerEvent.STOPPED;
 import static net.pincette.rs.kafka.Util.LOGGER;
 import static net.pincette.rs.kafka.Util.trace;
+import static net.pincette.util.Util.rethrow;
 import static net.pincette.util.Util.tryToGetForever;
 import static net.pincette.util.Util.waitFor;
 import static net.pincette.util.Util.waitForCondition;
@@ -32,6 +33,7 @@ import net.pincette.util.State;
 import net.pincette.util.Util.GeneralException;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.errors.RecordTooLargeException;
 
 /**
  * This reactive streams subscriber writes the messages it receives to the Kafka topics they refer
@@ -68,9 +70,32 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     this.eventHandler = eventHandler;
   }
 
+  private static <K, V> void handleKafkaException(
+      final ProducerRecord<K, V> rec, final Exception e) {
+    if (e != null) {
+      if (e instanceof RecordTooLargeException) {
+        reportTooLarge(rec);
+      } else {
+        rethrow(e);
+      }
+    }
+  }
+
+  private static <K, V> void reportTooLarge(final ProducerRecord<K, V> rec) {
+    LOGGER.log(
+        SEVERE,
+        "The record with key {0} could not be written to the topic {1} because it is too large. "
+            + "Its value starts with {2}.",
+        new Object[] {rec.key(), rec.topic(), truncate(rec.value().toString(), 4096)});
+  }
+
   public static <K, V> KafkaSubscriber<K, V> subscriber(
       final Supplier<KafkaProducer<K, V>> producer) {
     return new KafkaSubscriber<>(producer, null);
+  }
+
+  private static String truncate(final String s, final int size) {
+    return s.length() > size ? s.substring(0, size) : s;
   }
 
   private boolean allCancelled() {
@@ -297,7 +322,11 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
                 sending = true;
 
                 for (int i = 0; i < records.size() - 1; ++i) {
-                  p.send(trace("Send record", records.get(i)));
+                  final ProducerRecord<K, V> rec = records.get(i);
+
+                  p.send(
+                      trace("Send record", rec),
+                      (metadata, exception) -> handleKafkaException(rec, exception));
                 }
 
                 return sendToKafka(trace("Send record", records.get(records.size() - 1)))
@@ -328,10 +357,14 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
                   p.send(
                       rec,
                       (metadata, exception) -> {
-                        if (exception != null) {
+                        if (exception != null && !(exception instanceof RecordTooLargeException)) {
                           panic(exception);
                           completableFuture.complete(false);
                         } else {
+                          if (exception != null) {
+                            reportTooLarge(rec);
+                          }
+
                           completableFuture.complete(true);
                         }
                       }),
