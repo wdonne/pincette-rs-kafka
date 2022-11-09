@@ -5,7 +5,6 @@ import static java.time.Duration.ofMillis;
 import static java.time.Duration.ofSeconds;
 import static java.util.Optional.ofNullable;
 import static java.util.concurrent.CompletableFuture.completedFuture;
-import static java.util.logging.Level.FINE;
 import static java.util.logging.Level.SEVERE;
 import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
@@ -211,10 +210,14 @@ public class KafkaPublisher<K, V> {
     }
   }
 
+  private void pause() {
+    getConsumer().ifPresent(c -> topics.forEach(this::pause));
+  }
+
   private void pause(final String topic) {
     if (!paused.contains(topic)) {
       paused.add(topic);
-      LOGGER.log(FINE, () -> "Pause " + topic);
+      LOGGER.fine(() -> "Pause " + topic);
       consumer.pause(assigned(topic));
     }
   }
@@ -246,7 +249,7 @@ public class KafkaPublisher<K, V> {
 
   private void resume(final String topic) {
     if (paused.contains(topic)) {
-      LOGGER.log(FINE, () -> "Resume " + topic);
+      LOGGER.fine(() -> "Resume " + topic);
       consumer.resume(paused(topic));
       paused.remove(topic);
     }
@@ -272,6 +275,8 @@ public class KafkaPublisher<K, V> {
     if (topics == null || topics.isEmpty()) {
       throw new IllegalArgumentException("Can't run without topics.");
     }
+
+    pause();
 
     while (!stop) {
       commit();

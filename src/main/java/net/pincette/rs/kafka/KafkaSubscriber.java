@@ -51,6 +51,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
   private static final Duration TIMEOUT = ofMillis(500);
   private static final Duration WAIT_INTERVAL = ofMillis(500);
 
+  private final int batchSize;
   private final BiConsumer<ProducerEvent, KafkaProducer<K, V>> eventHandler;
   private final List<InternalSubscriber> internalSubscribers = new ArrayList<>();
   private final Supplier<KafkaProducer<K, V>> producerSupplier;
@@ -60,14 +61,16 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
   private Subscription subscription;
 
   public KafkaSubscriber() {
-    this(null, null);
+    this(null, null, BATCH);
   }
 
   private KafkaSubscriber(
       final Supplier<KafkaProducer<K, V>> producer,
-      final BiConsumer<ProducerEvent, KafkaProducer<K, V>> eventHandler) {
+      final BiConsumer<ProducerEvent, KafkaProducer<K, V>> eventHandler,
+      final int batchSize) {
     this.producerSupplier = producer;
     this.eventHandler = eventHandler;
+    this.batchSize = batchSize;
   }
 
   private static <K, V> void handleKafkaException(
@@ -91,7 +94,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
 
   public static <K, V> KafkaSubscriber<K, V> subscriber(
       final Supplier<KafkaProducer<K, V>> producer) {
-    return new KafkaSubscriber<>(producer, null);
+    return new KafkaSubscriber<>(producer, null, BATCH);
   }
 
   private static String truncate(final String s, final int size) {
@@ -104,7 +107,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
 
   public Subscriber<ProducerRecord<K, V>> branch() {
     final Processor<ProducerRecord<K, V>, List<ProducerRecord<K, V>>> preprocessor =
-        per(BATCH, TIMEOUT, TIMEOUT);
+        per(batchSize, TIMEOUT, TIMEOUT);
     final InternalSubscriber subscriber = new InternalSubscriber();
 
     internalSubscribers.add(subscriber);
@@ -226,6 +229,16 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
   }
 
   /**
+   * Creates a subscriber with a given batch size. The default is 500.
+   *
+   * @param batchSize the size of the batch the subscriber is requesting.
+   * @return A new subscriber instance.
+   */
+  public KafkaSubscriber<K, V> withBatchSize(final int batchSize) {
+    return new KafkaSubscriber<>(producerSupplier, eventHandler, batchSize);
+  }
+
+  /**
    * Creates a subscriber with an event handler that receives lifecycle events from the subscriber.
    *
    * @param eventHandler the function that consumes the events. It may be <code>null</code>.
@@ -233,7 +246,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
    */
   public KafkaSubscriber<K, V> withEventHandler(
       final BiConsumer<ProducerEvent, KafkaProducer<K, V>> eventHandler) {
-    return new KafkaSubscriber<>(producerSupplier, eventHandler);
+    return new KafkaSubscriber<>(producerSupplier, eventHandler, batchSize);
   }
 
   /**
@@ -244,7 +257,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
    * @return A new subscriber instance.
    */
   public KafkaSubscriber<K, V> withProducer(final Supplier<KafkaProducer<K, V>> producer) {
-    return new KafkaSubscriber<>(producer, eventHandler);
+    return new KafkaSubscriber<>(producer, eventHandler, batchSize);
   }
 
   private class InternalSubscriber implements Subscriber<List<ProducerRecord<K, V>>> {

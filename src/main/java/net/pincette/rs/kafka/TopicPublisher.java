@@ -5,12 +5,13 @@ import static java.util.concurrent.CompletableFuture.completedFuture;
 import static net.pincette.rs.Commit.commit;
 import static net.pincette.rs.FlattenList.flattenList;
 import static net.pincette.rs.Mapper.map;
+import static net.pincette.rs.Serializer.dispatch;
 import static net.pincette.rs.kafka.Util.LOGGER;
 
+import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.CompletionStage;
-import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.Flow.Processor;
 import java.util.concurrent.Flow.Publisher;
 import java.util.concurrent.Flow.Subscriber;
@@ -27,7 +28,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
  * @author Werner Donn\u00e9
  */
 public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
-  private final Deque<List<ConsumerRecord<K, V>>> batches = new ConcurrentLinkedDeque<>();
+  private final Deque<List<ConsumerRecord<K, V>>> batches = new ArrayDeque<>(1000);
   private final Consumer<String> cancel;
   private final Consumer<ConsumerRecord<K, V>> commit;
   private final Processor<List<ConsumerRecord<K, V>>, ConsumerRecord<K, V>> preprocessor =
@@ -56,12 +57,15 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   }
 
   void complete() {
-    LOGGER.finest(() -> "Completing publisher for topic " + topic);
-    completed = true;
+    dispatch(
+        () -> {
+          LOGGER.finest(() -> "Completing publisher for topic " + topic);
+          completed = true;
 
-    if (more) {
-      sendComplete();
-    }
+          if (more) {
+            sendComplete();
+          }
+        });
   }
 
   private void emit(final List<ConsumerRecord<K, V>> batch) {
@@ -75,14 +79,17 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   }
 
   void next(final List<ConsumerRecord<K, V>> batch) {
-    if (!batch.isEmpty()) {
-      if (more()) {
-        emit(batch);
-      } else {
-        LOGGER.finest(() -> "Buffer batch of size " + batch.size() + " from topic " + topic);
-        batches.addFirst(batch);
-      }
-    }
+    dispatch(
+        () -> {
+          if (!batch.isEmpty()) {
+            if (more()) {
+              emit(batch);
+            } else {
+              LOGGER.finest(() -> "Buffer batch of size " + batch.size() + " from topic " + topic);
+              batches.addFirst(batch);
+            }
+          }
+        });
   }
 
   private void sendComplete() {
@@ -101,11 +108,15 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
     }
 
     public void request(final long n) {
-      ofNullable(batches.pollLast()).ifPresentOrElse(TopicPublisher.this::emit, () -> more = true);
+      dispatch(
+          () -> {
+            ofNullable(batches.pollLast())
+                .ifPresentOrElse(TopicPublisher.this::emit, () -> more = true);
 
-      if (completed) {
-        sendComplete();
-      }
+            if (completed) {
+              sendComplete();
+            }
+          });
     }
   }
 }
