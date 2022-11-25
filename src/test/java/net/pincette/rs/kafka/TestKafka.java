@@ -4,6 +4,7 @@ import static com.mongodb.client.model.Filters.eq;
 import static java.lang.Integer.MAX_VALUE;
 import static java.lang.Integer.parseInt;
 import static java.lang.String.valueOf;
+import static java.time.Duration.ofMillis;
 import static java.time.Duration.ofSeconds;
 import static java.util.concurrent.CompletableFuture.supplyAsync;
 import static net.pincette.mongo.Collection.findOne;
@@ -33,6 +34,7 @@ import com.mongodb.client.model.ReplaceOptions;
 import com.mongodb.client.result.UpdateResult;
 import com.mongodb.reactivestreams.client.MongoClients;
 import com.mongodb.reactivestreams.client.MongoCollection;
+import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -175,7 +177,8 @@ class TestKafka {
                 new Mapper<>(pair -> supplyAsync(() -> pair(pair.first, pair.second + 1))),
                 new Async<>()),
         false,
-        (start, end) -> end == start + max);
+        (start, end) -> end == start + max,
+        null);
   }
 
   @BeforeEach
@@ -212,7 +215,8 @@ class TestKafka {
                             })))
                 .then(new Async<>()),
         true,
-        (start, end) -> end == -1);
+        (start, end) -> end == -1,
+        null);
   }
 
   @Test
@@ -226,7 +230,8 @@ class TestKafka {
                   throw new GeneralException("test");
                 }),
         true,
-        (start, end) -> end == -1);
+        (start, end) -> end == -1,
+        null);
   }
 
   @Test
@@ -244,7 +249,8 @@ class TestKafka {
                   return pair(pair.first, pair.second + 1);
                 }),
         true,
-        (start, end) -> end <= 345);
+        (start, end) -> end <= 345,
+        null);
   }
 
   private void fill(final int max, final String topic) {
@@ -288,7 +294,8 @@ class TestKafka {
                                 result -> pair(pair.first, result.getInt32("value").getValue()))),
                 new Async<>()),
         false,
-        (start, end) -> end == start + max);
+        (start, end) -> end == start + max,
+        null);
   }
 
   @Test
@@ -300,14 +307,29 @@ class TestKafka {
         max,
         () -> new Mapper<>(pair -> pair(pair.first, pair.second + 1)),
         false,
-        (start, end) -> end == start + max);
+        (start, end) -> end == start + max,
+        null);
+  }
+
+  @Test
+  @DisplayName("plain throttle")
+  void plainThrottle() {
+    final int max = 200000;
+
+    runTest(
+        max,
+        () -> new Mapper<>(pair -> pair(pair.first, pair.second + 1)),
+        false,
+        (start, end) -> end == start + max,
+        ofMillis(100));
   }
 
   private void runTest(
       final int max,
       final Supplier<Processor<Pair<String, Integer>, Pair<String, Integer>>> incrementer,
       final boolean cancel,
-      final BiPredicate<Long, Long> offsetTest) {
+      final BiPredicate<Long, Long> offsetTest,
+      final Duration throttleTime) {
     final State<Boolean> cancelled = new State<>(false);
     final PassThrough<Integer> pass1 = new PassThrough<>();
     final PassThrough<Integer> pass2 = new PassThrough<>();
@@ -327,7 +349,8 @@ class TestKafka {
         new KafkaPublisher<String, String>()
             .withConsumer(TestUtil::consumer)
             .withEventHandler(producerEventHandler(startOffsets, topics, offsetTest))
-            .withTopics(topics);
+            .withTopics(topics)
+            .withThrottleTime(throttleTime);
 
     with(processor(publisher, inTopic1, outTopic1, incrementer.get(), false))
         .map(checkOrderProducer(outTopic1, 0, "merge at " + outTopic1))

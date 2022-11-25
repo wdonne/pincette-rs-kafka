@@ -92,6 +92,10 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
         });
   }
 
+  int queued() {
+    return batches.size();
+  }
+
   private void sendComplete() {
     LOGGER.finest(() -> "Publisher for topic " + topic + " sends onComplete");
     preprocessor.onComplete();

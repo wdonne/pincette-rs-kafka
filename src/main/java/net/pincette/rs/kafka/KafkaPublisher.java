@@ -15,6 +15,7 @@ import static net.pincette.util.Collections.consumeHead;
 import static net.pincette.util.Pair.pair;
 import static net.pincette.util.StreamUtil.stream;
 import static net.pincette.util.Util.tryToDo;
+import static net.pincette.util.Util.tryToDoSilent;
 import static net.pincette.util.Util.tryToGetForever;
 
 import java.time.Duration;
@@ -66,6 +67,7 @@ public class KafkaPublisher<K, V> {
   private final Map<String, TopicPublisher<K, V>> publishers;
   private final Deque<ConsumerRecord<K, V>> recordsToCommit = new ConcurrentLinkedDeque<>();
   private final Set<String> topics;
+  private final Duration throttleTime;
   private KafkaConsumer<K, V> consumer;
   private boolean started;
   private boolean stop;
@@ -75,22 +77,24 @@ public class KafkaPublisher<K, V> {
    * instances.
    */
   public KafkaPublisher() {
-    this(null, null, null);
+    this(null, null, null, null);
   }
 
   private KafkaPublisher(
       final Supplier<KafkaConsumer<K, V>> consumer,
       final Set<String> topics,
-      final BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> eventHandler) {
+      final BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> eventHandler,
+      final Duration throttleTime) {
     this.consumerSupplier = consumer;
     this.topics = topics;
     this.eventHandler = eventHandler;
+    this.throttleTime = throttleTime;
     publishers = createPublishers();
   }
 
   public static <K, V> KafkaPublisher<K, V> publisher(
       final Supplier<KafkaConsumer<K, V>> consumer) {
-    return new KafkaPublisher<>(consumer, null, null);
+    return new KafkaPublisher<>(consumer, null, null, null);
   }
 
   private static Set<TopicPartition> partitions(
@@ -170,6 +174,10 @@ public class KafkaPublisher<K, V> {
     }
   }
 
+  private int excessQueuedBatches() {
+    return queuedBatches() - publishers.size();
+  }
+
   private Optional<KafkaConsumer<K, V>> getConsumer() {
     if (consumer == null && consumerSupplier != null && topics != null) {
       consumer = consumerSupplier.get();
@@ -183,6 +191,10 @@ public class KafkaPublisher<K, V> {
     return tryToGetForever(() -> completedFuture(fn.get()), RETRY, this::panic)
         .toCompletableFuture()
         .join();
+  }
+
+  private void holdYourHorses() {
+    shouldWait().ifPresent(millis -> tryToDoSilent(() -> sleep(millis)));
   }
 
   private Map<TopicPartition, OffsetAndMetadata> offsets(
@@ -239,6 +251,10 @@ public class KafkaPublisher<K, V> {
     return publishers.entrySet().stream().collect(toMap(Entry::getKey, Entry::getValue));
   }
 
+  private int queuedBatches() {
+    return publishers.values().stream().mapToInt(TopicPublisher::queued).sum();
+  }
+
   private void removePendingCommits(final Map<TopicPartition, OffsetAndMetadata> committed) {
     committed.forEach(
         (k, v) ->
@@ -261,6 +277,14 @@ public class KafkaPublisher<K, V> {
     }
   }
 
+  private Optional<Long> shouldWait() {
+    return ofNullable(throttleTime)
+        .map(time -> pair(time, excessQueuedBatches()))
+        .filter(pair -> pair.second > 0)
+        .map(pair -> pair.first)
+        .map(Duration::toMillis);
+  }
+
   /**
    * Starts the publisher. The method blocks until the publisher is stopped, which happens with
    * either a specific request of when all the topic streams have been cancelled.
@@ -281,6 +305,7 @@ public class KafkaPublisher<K, V> {
     while (!stop) {
       commit();
       dispatch(poll());
+      holdYourHorses();
     }
 
     LOGGER.finest("Stopped polling");
@@ -340,7 +365,7 @@ public class KafkaPublisher<K, V> {
    * @return A new publisher instance.
    */
   public KafkaPublisher<K, V> withConsumer(final Supplier<KafkaConsumer<K, V>> consumer) {
-    return new KafkaPublisher<>(consumer, topics, eventHandler);
+    return new KafkaPublisher<>(consumer, topics, eventHandler, throttleTime);
   }
 
   /**
@@ -351,7 +376,7 @@ public class KafkaPublisher<K, V> {
    */
   public KafkaPublisher<K, V> withEventHandler(
       final BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> eventHandler) {
-    return new KafkaPublisher<>(consumerSupplier, topics, eventHandler);
+    return new KafkaPublisher<>(consumerSupplier, topics, eventHandler, throttleTime);
   }
 
   /**
@@ -361,7 +386,18 @@ public class KafkaPublisher<K, V> {
    * @return A new publisher instance.
    */
   public KafkaPublisher<K, V> withTopics(final Set<String> topics) {
-    return new KafkaPublisher<>(consumerSupplier, topics, eventHandler);
+    return new KafkaPublisher<>(consumerSupplier, topics, eventHandler, throttleTime);
+  }
+
+  /**
+   * Creates a publisher which throttles the poll loop when more batches have been queued than there
+   * are topic publishers.
+   *
+   * @param throttleTime the time the poll loop is stalled.
+   * @return A new publisher instance.
+   */
+  public KafkaPublisher<K, V> withThrottleTime(final Duration throttleTime) {
+    return new KafkaPublisher<>(consumerSupplier, topics, eventHandler, throttleTime);
   }
 
   private class RebalanceListener implements ConsumerRebalanceListener {
