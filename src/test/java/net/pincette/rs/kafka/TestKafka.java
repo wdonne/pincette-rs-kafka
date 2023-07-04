@@ -16,7 +16,7 @@ import static net.pincette.rs.Util.generate;
 import static net.pincette.rs.kafka.TestUtil.COMMON_CONFIG;
 import static net.pincette.rs.kafka.TestUtil.measure;
 import static net.pincette.rs.kafka.TestUtil.newTopic;
-import static net.pincette.rs.kafka.TestUtil.producerEventHandler;
+import static net.pincette.rs.kafka.TestUtil.consumerEventHandler;
 import static net.pincette.rs.kafka.TestUtil.testComplete;
 import static net.pincette.rs.kafka.TestUtil.topic;
 import static net.pincette.rs.kafka.Util.createTopics;
@@ -348,7 +348,7 @@ class TestKafka {
     final KafkaPublisher<String, String> publisher =
         new KafkaPublisher<String, String>()
             .withConsumer(TestUtil::consumer)
-            .withEventHandler(producerEventHandler(startOffsets, topics, offsetTest))
+            .withEventHandler(consumerEventHandler(startOffsets, topics, offsetTest))
             .withTopics(topics)
             .withThrottleTime(throttleTime);
 

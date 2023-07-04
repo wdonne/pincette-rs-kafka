@@ -80,6 +80,20 @@ class TestUtil {
     return new KafkaConsumer<>(CONSUMER_CONFIG);
   }
 
+  static <K, V> BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> consumerEventHandler(
+      final State<Map<TopicPartition, Long>> startOffsets,
+      final Set<String> topics,
+      final BiPredicate<Long, Long> offsetTest) {
+    return (event, consumer) -> {
+      if (event == ConsumerEvent.STARTED) {
+        consumer.seekToBeginning(consumer.assignment());
+        startOffsets.set(positions(consumer, topics));
+      } else if (event == ConsumerEvent.STOPPED) {
+        assertTrue(checkOffsets(startOffsets.get(), offsets(consumer, topics), offsetTest));
+      }
+    };
+  }
+
   static void measure(final Runnable run) {
     final Instant started = now();
 
@@ -111,20 +125,6 @@ class TestUtil {
 
   static KafkaProducer<String, String> producer() {
     return new KafkaProducer<>(PRODUCER_CONFIG);
-  }
-
-  static <K, V> BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> producerEventHandler(
-      final State<Map<TopicPartition, Long>> startOffsets,
-      final Set<String> topics,
-      final BiPredicate<Long, Long> offsetTest) {
-    return (event, consumer) -> {
-      if (event == ConsumerEvent.STARTED) {
-        consumer.seekToBeginning(consumer.assignment());
-        startOffsets.set(positions(consumer, topics));
-      } else if (event == ConsumerEvent.STOPPED) {
-        assertTrue(checkOffsets(startOffsets.get(), offsets(consumer, topics), offsetTest));
-      }
-    };
   }
 
   private static <K, V> Map<TopicPartition, Long> positions(

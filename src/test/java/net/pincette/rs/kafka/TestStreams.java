@@ -9,7 +9,7 @@ import static net.pincette.rs.kafka.KafkaSubscriber.subscriber;
 import static net.pincette.rs.kafka.TestUtil.COMMON_CONFIG;
 import static net.pincette.rs.kafka.TestUtil.measure;
 import static net.pincette.rs.kafka.TestUtil.newTopic;
-import static net.pincette.rs.kafka.TestUtil.producerEventHandler;
+import static net.pincette.rs.kafka.TestUtil.consumerEventHandler;
 import static net.pincette.rs.kafka.TestUtil.testComplete;
 import static net.pincette.rs.kafka.TestUtil.topic;
 import static net.pincette.rs.kafka.Util.createTopics;
@@ -107,7 +107,7 @@ class TestStreams {
               fromPublisher(
                       publisher(TestUtil::consumer)
                           .withEventHandler(
-                              producerEventHandler(
+                              consumerEventHandler(
                                   startOffsets, topics, (start, end) -> end == start + max)))
                   .apply(topics));
           return source.get();

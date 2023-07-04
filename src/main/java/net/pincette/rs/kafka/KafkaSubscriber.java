@@ -48,29 +48,32 @@ import org.apache.kafka.common.errors.RecordTooLargeException;
 public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
   private static final Duration BACKOFF = ofSeconds(5);
   private static final int BATCH = 500;
-  private static final Duration TIMEOUT = ofMillis(500);
+  private static final Duration DEFAULT_TIMEOUT = ofMillis(50);
   private static final Duration WAIT_INTERVAL = ofMillis(500);
 
   private final int batchSize;
   private final BiConsumer<ProducerEvent, KafkaProducer<K, V>> eventHandler;
   private final List<InternalSubscriber> internalSubscribers = new ArrayList<>();
   private final Supplier<KafkaProducer<K, V>> producerSupplier;
+  private final Duration timeout;
   private Subscriber<ProducerRecord<K, V>> branch;
   private KafkaProducer<K, V> producer;
   private boolean sending;
   private Subscription subscription;
 
   public KafkaSubscriber() {
-    this(null, null, BATCH);
+    this(null, null, BATCH, DEFAULT_TIMEOUT);
   }
 
   private KafkaSubscriber(
       final Supplier<KafkaProducer<K, V>> producer,
       final BiConsumer<ProducerEvent, KafkaProducer<K, V>> eventHandler,
-      final int batchSize) {
+      final int batchSize,
+      final Duration timeout) {
     this.producerSupplier = producer;
     this.eventHandler = eventHandler;
     this.batchSize = batchSize;
+    this.timeout = timeout;
   }
 
   private static <K, V> void handleKafkaException(
@@ -94,7 +97,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
 
   public static <K, V> KafkaSubscriber<K, V> subscriber(
       final Supplier<KafkaProducer<K, V>> producer) {
-    return new KafkaSubscriber<>(producer, null, BATCH);
+    return new KafkaSubscriber<>(producer, null, BATCH, DEFAULT_TIMEOUT);
   }
 
   private static String truncate(final String s, final int size) {
@@ -107,7 +110,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
 
   public Subscriber<ProducerRecord<K, V>> branch() {
     final Processor<ProducerRecord<K, V>, List<ProducerRecord<K, V>>> preprocessor =
-        per(batchSize, TIMEOUT, TIMEOUT);
+        per(batchSize, DEFAULT_TIMEOUT, DEFAULT_TIMEOUT);
     final InternalSubscriber subscriber = new InternalSubscriber();
 
     internalSubscribers.add(subscriber);
@@ -235,7 +238,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
    * @return A new subscriber instance.
    */
   public KafkaSubscriber<K, V> withBatchSize(final int batchSize) {
-    return new KafkaSubscriber<>(producerSupplier, eventHandler, batchSize);
+    return new KafkaSubscriber<>(producerSupplier, eventHandler, batchSize, timeout);
   }
 
   /**
@@ -246,7 +249,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
    */
   public KafkaSubscriber<K, V> withEventHandler(
       final BiConsumer<ProducerEvent, KafkaProducer<K, V>> eventHandler) {
-    return new KafkaSubscriber<>(producerSupplier, eventHandler, batchSize);
+    return new KafkaSubscriber<>(producerSupplier, eventHandler, batchSize, timeout);
   }
 
   /**
@@ -257,7 +260,18 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
    * @return A new subscriber instance.
    */
   public KafkaSubscriber<K, V> withProducer(final Supplier<KafkaProducer<K, V>> producer) {
-    return new KafkaSubscriber<>(producer, eventHandler, batchSize);
+    return new KafkaSubscriber<>(producer, eventHandler, batchSize, timeout);
+  }
+
+  /**
+   * Creates a subscriber with a given timeout. The default is 50ms.
+   *
+   * @param timeout the time after which a batch that is not yet full is flushed and additional
+   *     messages are requested.
+   * @return A new subscriber instance.
+   */
+  public KafkaSubscriber<K, V> withTimeout(final Duration timeout) {
+    return new KafkaSubscriber<>(producerSupplier, eventHandler, batchSize, timeout);
   }
 
   private class InternalSubscriber implements Subscriber<List<ProducerRecord<K, V>>> {
