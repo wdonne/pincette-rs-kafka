@@ -6,7 +6,7 @@ import static net.pincette.rs.Commit.commit;
 import static net.pincette.rs.FlattenList.flattenList;
 import static net.pincette.rs.Mapper.map;
 import static net.pincette.rs.Serializer.dispatch;
-import static net.pincette.rs.kafka.Util.LOGGER;
+import static net.pincette.rs.kafka.Util.trace;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
@@ -49,8 +49,7 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   }
 
   private CompletionStage<Boolean> commitRecords(final List<ConsumerRecord<K, V>> records) {
-    LOGGER.finest(
-        () -> "Publisher for topic " + topic + " receives " + records.size() + " to commit");
+    trace(() -> "Publisher for topic " + topic + " receives " + records.size() + " to commit");
     records.forEach(commit);
 
     return completedFuture(true);
@@ -59,7 +58,7 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   void complete() {
     dispatch(
         () -> {
-          LOGGER.finest(() -> "Completing publisher for topic " + topic);
+          trace(() -> "Completing publisher for topic " + topic);
           completed = true;
 
           if (more) {
@@ -70,7 +69,7 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
 
   private void emit(final List<ConsumerRecord<K, V>> batch) {
     more = false;
-    LOGGER.finest(() -> "Emit batch of size " + batch.size() + " from topic " + topic);
+    trace(() -> "Emit batch of size " + batch.size() + " from topic " + topic);
     preprocessor.onNext(batch);
   }
 
@@ -85,7 +84,7 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
             if (more()) {
               emit(batch);
             } else {
-              LOGGER.finest(() -> "Buffer batch of size " + batch.size() + " from topic " + topic);
+              trace(() -> "Buffer batch of size " + batch.size() + " from topic " + topic);
               batches.addFirst(batch);
             }
           }
@@ -97,7 +96,7 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   }
 
   private void sendComplete() {
-    LOGGER.finest(() -> "Publisher for topic " + topic + " sends onComplete");
+    trace(() -> "Publisher for topic " + topic + " sends onComplete");
     preprocessor.onComplete();
   }
 

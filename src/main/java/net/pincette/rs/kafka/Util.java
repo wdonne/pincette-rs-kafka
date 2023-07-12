@@ -1,6 +1,7 @@
 package net.pincette.rs.kafka;
 
 import static java.lang.Integer.MAX_VALUE;
+import static java.lang.System.currentTimeMillis;
 import static java.time.Duration.ofSeconds;
 import static java.util.logging.Logger.getLogger;
 import static java.util.stream.Collectors.toSet;
@@ -149,15 +150,17 @@ public class Util {
   }
 
   static <T> T trace(final String message, final T value) {
-    LOGGER.finest(() -> message + ": " + value);
+    return trace(() -> message, value);
+  }
+
+  static <T> T trace(final Supplier<String> message, final T value) {
+    LOGGER.finest(() -> currentTimeMillis() + ": " + message.get() + ": " + value);
 
     return value;
   }
 
-  static <T> T trace(final Supplier<String> message, final T value) {
-    LOGGER.finest(() -> message.get() + ": " + value);
-
-    return value;
+  static void trace(final Supplier<String> message) {
+    LOGGER.finest(() -> currentTimeMillis() + ": " + message.get());
   }
 
   private static CompletionStage<Boolean> waitFor(final Supplier<CompletionStage<Boolean>> check) {

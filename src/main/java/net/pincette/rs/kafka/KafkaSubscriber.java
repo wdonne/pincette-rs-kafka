@@ -110,7 +110,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
 
   public Subscriber<ProducerRecord<K, V>> branch() {
     final Processor<ProducerRecord<K, V>, List<ProducerRecord<K, V>>> preprocessor =
-        per(batchSize, DEFAULT_TIMEOUT, DEFAULT_TIMEOUT);
+        per(batchSize, DEFAULT_TIMEOUT);
     final InternalSubscriber subscriber = new InternalSubscriber();
 
     internalSubscribers.add(subscriber);
@@ -131,7 +131,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     if (producer != null && (!sending || force)) {
       final KafkaProducer<K, V> p = producer;
 
-      LOGGER.finest(() -> "Closing producer " + p);
+      trace(() -> "Closing producer " + p);
       producer = null;
       p.close();
     }
@@ -322,7 +322,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
         throw new GeneralException("onNext on completed stream");
       }
 
-      LOGGER.finest(() -> "Sending batch of size " + records.size() + " to Kafka");
+      trace(() -> "Sending batch of size " + records.size() + " to Kafka");
       tryToGetForever(() -> send(records), BACKOFF, this::panic).toCompletableFuture().join();
       more();
     }

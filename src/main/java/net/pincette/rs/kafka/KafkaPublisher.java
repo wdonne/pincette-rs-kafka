@@ -120,7 +120,7 @@ public class KafkaPublisher<K, V> {
 
   private void close(final KafkaConsumer<K, V> consumer) {
     sendEvent(ConsumerEvent.STOPPED);
-    LOGGER.finest(() -> "Closing consumer " + consumer);
+    trace(() -> "Closing consumer " + consumer);
     consumer.close();
   }
 
@@ -216,7 +216,7 @@ public class KafkaPublisher<K, V> {
     LOGGER.log(SEVERE, exception.getMessage(), exception);
 
     if (consumer != null) {
-      LOGGER.finest(() -> "Closing consumer " + consumer);
+      trace(() -> "Closing consumer " + consumer);
       consumer.close();
       consumer = null;
     }
@@ -290,7 +290,7 @@ public class KafkaPublisher<K, V> {
    * either a specific request of when all the topic streams have been cancelled.
    */
   public void start() {
-    LOGGER.finest("Starting");
+    trace("Starting");
 
     if (consumerSupplier == null) {
       throw new IllegalArgumentException("Can't run without a consumer.");
@@ -308,7 +308,7 @@ public class KafkaPublisher<K, V> {
       holdYourHorses();
     }
 
-    LOGGER.finest("Stopped polling");
+    trace("Stopped polling");
 
     getConsumer()
         .ifPresent(
@@ -321,12 +321,12 @@ public class KafkaPublisher<K, V> {
 
   /** Signals the request to stop the publisher, which will wind down in an orderly way. */
   public void stop() {
-    LOGGER.finest("Stop requested");
+    trace("Stop requested");
     stop = true;
   }
 
   private void stopPublishers() {
-    LOGGER.finest("Stopping publishers");
+    trace("Stopping publishers");
 
     publishers.entrySet().stream()
         .filter(e -> !cancelled.contains(e.getKey()))
