@@ -27,6 +27,7 @@ import java.util.concurrent.Flow.Processor;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.function.BiConsumer;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import net.pincette.function.SideEffect;
 import net.pincette.util.State;
@@ -43,7 +44,7 @@ import org.apache.kafka.common.errors.RecordTooLargeException;
  *
  * @param <K> the key type.
  * @param <V> the value type.
- * @author Werner Donn\u00e9
+ * @author Werner Donné
  */
 public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
   private static final Duration BACKOFF = ofSeconds(5);
@@ -105,7 +106,15 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
   }
 
   private boolean allCancelled() {
-    return internalSubscribers.stream().allMatch(s -> s.cancelled);
+    return allCondition(s -> s.cancelled);
+  }
+
+  private boolean allCompleted() {
+    return allCondition(s -> s.completed);
+  }
+
+  private boolean allCondition(final Predicate<InternalSubscriber> condition) {
+    return internalSubscribers.stream().allMatch(condition);
   }
 
   public Subscriber<ProducerRecord<K, V>> branch() {
@@ -119,14 +128,6 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     return preprocessor;
   }
 
-  private void cancelAll() {
-    internalSubscribers.stream().filter(s -> !s.cancelled).forEach(InternalSubscriber::cancel);
-  }
-
-  private int cancelled() {
-    return (int) internalSubscribers.stream().filter(s -> s.cancelled).count();
-  }
-
   private void close(boolean force) {
     if (producer != null && (!sending || force)) {
       final KafkaProducer<K, V> p = producer;
@@ -135,6 +136,14 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
       producer = null;
       p.close();
     }
+  }
+
+  private int completed() {
+    return countCondition(s -> s.completed);
+  }
+
+  private int countCondition(final Predicate<InternalSubscriber> condition) {
+    return (int) internalSubscribers.stream().filter(condition).count();
   }
 
   private Optional<KafkaProducer<K, V>> getProducer() {
@@ -178,6 +187,10 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     }
   }
 
+  private void setCompleted() {
+    internalSubscribers.stream().filter(s -> !s.completed).forEach(InternalSubscriber::onComplete);
+  }
+
   /**
    * Stops the subscriber. This method blocks until all branch subscribers are stopped.
    *
@@ -186,19 +199,19 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
    */
   @SuppressWarnings("java:S106") // At this point all loggers are dead already.
   public void stop(final Duration gracePeriod) {
-    if (!allCancelled()) {
-      waitForCancel(gracePeriod)
+    if (!allCompleted()) {
+      waitForCompleted(gracePeriod)
           .thenAccept(
               result -> {
                 if (FALSE.equals(result)) {
                   System.out.println(
-                      " Have to cancel "
-                          + internalSubscribers.stream().filter(s -> !s.cancelled).count()
-                          + " of "
-                          + internalSubscribers.size());
+                      " "
+                          + (internalSubscribers.size() - completed())
+                          + " branches "
+                          + "didn't complete");
                 }
 
-                cancelAll();
+                setCompleted();
                 stop();
               });
     } else {
@@ -209,22 +222,22 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
   }
 
   private void stop() {
-    if (allCancelled()) {
+    if (allCompleted()) {
       sendEvent(STOPPED);
       close(false);
     }
   }
 
-  private CompletionStage<Boolean> waitForCancel(final Duration gracePeriod) {
-    final State<Integer> cancelled = new State<>(cancelled());
+  private CompletionStage<Boolean> waitForCompleted(final Duration gracePeriod) {
+    final State<Integer> completed = new State<>(completed());
 
     return waitFor(
-            waitForCondition(() -> completedFuture(allCancelled())),
+            waitForCondition(() -> completedFuture(allCompleted())),
             () ->
-                Optional.of(cancelled())
-                    .filter(c -> c > cancelled.get())
+                Optional.of(completed())
+                    .filter(c -> c > completed.get())
                     .map(
-                        c -> SideEffect.<Boolean>run(() -> cancelled.set(c)).andThenGet(() -> true))
+                        c -> SideEffect.<Boolean>run(() -> completed.set(c)).andThenGet(() -> true))
                     .orElse(false),
             WAIT_INTERVAL,
             gracePeriod)
@@ -280,12 +293,6 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     private boolean completed;
     private Subscription subscription;
 
-    private void cancel() {
-      cancelled = true;
-      subscription.cancel();
-      completeFuture();
-    }
-
     private void completeFuture() {
       if (completed || cancelled) {
         future.complete(null);
@@ -323,8 +330,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
       }
 
       trace(() -> "Sending batch of size " + records.size() + " to Kafka");
-      tryToGetForever(() -> send(records), BACKOFF, this::panic).toCompletableFuture().join();
-      more();
+      tryToGetForever(() -> send(records), BACKOFF, this::panic).thenAccept(r -> more());
     }
 
     public void onSubscribe(final Subscription subscription) {
@@ -347,14 +353,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
           .map(
               p -> {
                 sending = true;
-
-                for (int i = 0; i < records.size() - 1; ++i) {
-                  final ProducerRecord<K, V> rec = records.get(i);
-
-                  p.send(
-                      trace("Send record", rec),
-                      (metadata, exception) -> handleKafkaException(rec, exception));
-                }
+                sendBatchPrefix(records, p);
 
                 return sendToKafka(trace("Send record", records.get(records.size() - 1)))
                     .thenApply(
@@ -373,6 +372,17 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
                   cancelled
                       ? completedFuture(false)
                       : failedFuture(new GeneralException("No producer")));
+    }
+
+    private void sendBatchPrefix(
+        final List<ProducerRecord<K, V>> records, final KafkaProducer<K, V> producer) {
+      for (int i = 0; i < records.size() - 1; ++i) {
+        final ProducerRecord<K, V> rec = records.get(i);
+
+        producer.send(
+            trace("Send record", rec),
+            (metadata, exception) -> handleKafkaException(rec, exception));
+      }
     }
 
     private CompletionStage<Boolean> sendToKafka(final ProducerRecord<K, V> rec) {

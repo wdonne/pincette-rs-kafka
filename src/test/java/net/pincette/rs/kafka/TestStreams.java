@@ -51,6 +51,24 @@ class TestStreams {
         .get();
   }
 
+  private static Function<Set<String>, TopicSource<String, String, ConsumerRecord<String, String>>>
+      getSetTopicSourceFunction(
+          final State<TopicSource<String, String, ConsumerRecord<String, String>>> source,
+          final int max) {
+    final State<Map<TopicPartition, Long>> startOffsets = new State<>();
+
+    return topics -> {
+      source.set(
+          fromPublisher(
+                  publisher(TestUtil::consumer)
+                      .withEventHandler(
+                          consumerEventHandler(
+                              startOffsets, topics, (start, end) -> end == start + max)))
+              .apply(topics));
+      return source.get();
+    };
+  }
+
   private static Publisher<Message<String, String>> processor(
       final Publisher<Message<String, String>> publisher) {
     return with(publisher).map(m -> message(m.key, valueOf(parseInt(m.value) + 1))).get();
@@ -100,18 +118,8 @@ class TestStreams {
   void streams() {
     final int max = 200000;
     final State<TopicSource<String, String, ConsumerRecord<String, String>>> source = new State<>();
-    final State<Map<TopicPartition, Long>> startOffsets = new State<>();
     final Function<Set<String>, TopicSource<String, String, ConsumerRecord<String, String>>> fn =
-        topics -> {
-          source.set(
-              fromPublisher(
-                      publisher(TestUtil::consumer)
-                          .withEventHandler(
-                              consumerEventHandler(
-                                  startOffsets, topics, (start, end) -> end == start + max)))
-                  .apply(topics));
-          return source.get();
-        };
+        getSetTopicSourceFunction(source, max);
     final AtomicInteger stopped = new AtomicInteger(2);
 
     measure(

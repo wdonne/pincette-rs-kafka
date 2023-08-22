@@ -25,27 +25,28 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
  *
  * @param <K> the key type.
  * @param <V> the value type.
- * @author Werner Donn\u00e9
+ * @author Werner Donné
  */
 public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   private final Deque<List<ConsumerRecord<K, V>>> batches = new ArrayDeque<>(1000);
-  private final Consumer<String> cancel;
   private final Consumer<ConsumerRecord<K, V>> commit;
   private final Processor<List<ConsumerRecord<K, V>>, ConsumerRecord<K, V>> preprocessor =
       Pipe.<List<ConsumerRecord<K, V>>, ConsumerRecord<K, V>>pipe(flattenList())
           .then(map(Util::trace))
           .then(commit(this::commitRecords));
   private final String topic;
+  private boolean cancelled;
   private boolean completed;
   private boolean more;
+  private long requested;
 
-  TopicPublisher(
-      final String topic,
-      final Consumer<ConsumerRecord<K, V>> commit,
-      final Consumer<String> cancel) {
+  TopicPublisher(final String topic, final Consumer<ConsumerRecord<K, V>> commit) {
     this.topic = topic;
     this.commit = commit;
-    this.cancel = cancel;
+  }
+
+  boolean cancelled() {
+    return cancelled;
   }
 
   private CompletionStage<Boolean> commitRecords(final List<ConsumerRecord<K, V>> records) {
@@ -60,17 +61,19 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
         () -> {
           trace(() -> "Completing publisher for topic " + topic);
           completed = true;
-
-          if (more) {
-            sendComplete();
-          }
+          sendComplete();
         });
   }
 
   private void emit(final List<ConsumerRecord<K, V>> batch) {
     more = false;
+    --requested;
     trace(() -> "Emit batch of size " + batch.size() + " from topic " + topic);
     preprocessor.onNext(batch);
+
+    if (completed) {
+      sendComplete();
+    }
   }
 
   boolean more() {
@@ -80,7 +83,7 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   void next(final List<ConsumerRecord<K, V>> batch) {
     dispatch(
         () -> {
-          if (!batch.isEmpty()) {
+          if (!batch.isEmpty() && !cancelled()) {
             if (more()) {
               emit(batch);
             } else {
@@ -96,8 +99,10 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   }
 
   private void sendComplete() {
-    trace(() -> "Publisher for topic " + topic + " sends onComplete");
-    preprocessor.onComplete();
+    if (cancelled || (requested > 0 && batches.isEmpty())) {
+      trace(() -> "Publisher for topic " + topic + " sends onComplete");
+      preprocessor.onComplete();
+    }
   }
 
   public void subscribe(final Subscriber<? super ConsumerRecord<K, V>> subscriber) {
@@ -107,19 +112,29 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
 
   private class Backpressure implements Subscription {
     public void cancel() {
-      TopicPublisher.this.cancel.accept(topic);
+      dispatch(
+          () -> {
+            cancelled = true;
+            complete();
+          });
     }
 
     public void request(final long n) {
       dispatch(
           () -> {
-            ofNullable(batches.pollLast())
-                .ifPresentOrElse(TopicPublisher.this::emit, () -> more = true);
+            requested += n;
 
             if (completed) {
               sendComplete();
+            } else {
+              sendOneBatch();
             }
           });
+    }
+
+    private void sendOneBatch() {
+      ofNullable(batches.pollLast())
+          .ifPresentOrElse(TopicPublisher.this::emit, () -> more = !cancelled() && !completed);
     }
   }
 }

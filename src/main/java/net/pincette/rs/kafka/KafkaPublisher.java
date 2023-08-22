@@ -21,10 +21,10 @@ import static net.pincette.util.Util.tryToGetForever;
 import java.time.Duration;
 import java.util.Collection;
 import java.util.Deque;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -52,18 +52,16 @@ import org.apache.kafka.common.TopicPartition;
  *
  * @param <K> the key type.
  * @param <V> the value type.
- * @author Werner Donn\u00e9
+ * @author Werner Donné
  */
 public class KafkaPublisher<K, V> {
   private static final Duration POLL_TIMEOUT = ofMillis(100);
   private static final Duration RETRY = ofSeconds(5);
   private static final int WAIT_TIMEOUT = 3000;
 
-  private final Set<String> cancelled = new HashSet<>();
   private final Supplier<KafkaConsumer<K, V>> consumerSupplier;
   private final BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> eventHandler;
   private final Map<TopicPartition, OffsetAndMetadata> pendingCommits = new ConcurrentHashMap<>();
-  private final Set<String> paused = new HashSet<>();
   private final Map<String, TopicPublisher<K, V>> publishers;
   private final Deque<ConsumerRecord<K, V>> recordsToCommit = new ConcurrentLinkedDeque<>();
   private final Set<String> topics;
@@ -103,19 +101,14 @@ public class KafkaPublisher<K, V> {
   }
 
   private boolean allTopicsCancelled() {
-    return cancelled.equals(topics);
+    return topics.stream()
+        .map(publishers::get)
+        .filter(Objects::nonNull)
+        .allMatch(TopicPublisher::cancelled);
   }
 
-  private Set<TopicPartition> assigned(final String topic) {
+  private Set<TopicPartition> assignedPartitions(final String topic) {
     return partitions(topic, consumer.assignment());
-  }
-
-  private void cancelTopic(final String topic) {
-    cancelled.add(topic);
-
-    if (allTopicsCancelled()) {
-      stop = true;
-    }
   }
 
   private void close(final KafkaConsumer<K, V> consumer) {
@@ -125,7 +118,7 @@ public class KafkaPublisher<K, V> {
   }
 
   private TopicPublisher<K, V> createPublisher(final String topic) {
-    return new TopicPublisher<>(topic, recordsToCommit::addLast, this::cancelTopic);
+    return new TopicPublisher<>(topic, recordsToCommit::addLast);
   }
 
   private Map<String, TopicPublisher<K, V>> createPublishers() {
@@ -222,19 +215,22 @@ public class KafkaPublisher<K, V> {
     }
   }
 
-  private void pause() {
+  private void pauseAll() {
     getConsumer().ifPresent(c -> topics.forEach(this::pause));
   }
 
-  private void pause(final String topic) {
-    if (!paused.contains(topic)) {
-      paused.add(topic);
-      LOGGER.fine(() -> "Pause " + topic);
-      consumer.pause(assigned(topic));
-    }
+  private void pauseTopics() {
+    publishers.entrySet().stream()
+        .filter(e -> e.getValue().cancelled() || !e.getValue().more())
+        .forEach(e -> pause(e.getKey()));
   }
 
-  private Set<TopicPartition> paused(final String topic) {
+  private void pause(final String topic) {
+    LOGGER.fine(() -> "Pause " + topic);
+    consumer.pause(assignedPartitions(topic));
+  }
+
+  private Set<TopicPartition> pausedPartitions(final String topic) {
     return partitions(topic, consumer.paused());
   }
 
@@ -264,11 +260,14 @@ public class KafkaPublisher<K, V> {
   }
 
   private void resume(final String topic) {
-    if (paused.contains(topic)) {
-      LOGGER.fine(() -> "Resume " + topic);
-      consumer.resume(paused(topic));
-      paused.remove(topic);
-    }
+    LOGGER.fine(() -> "Resume " + topic);
+    consumer.resume(pausedPartitions(topic));
+  }
+
+  private void resumeTopics() {
+    publishers.entrySet().stream()
+        .filter(e -> !e.getValue().cancelled() && e.getValue().more())
+        .forEach(e -> resume(e.getKey()));
   }
 
   private void sendEvent(final ConsumerEvent event) {
@@ -300,15 +299,23 @@ public class KafkaPublisher<K, V> {
       throw new IllegalArgumentException("Can't run without topics.");
     }
 
-    pause();
+    pauseAll();
 
     while (!stop) {
       commit();
-      dispatch(poll());
-      holdYourHorses();
+      pauseTopics();
+      resumeTopics();
+
+      if (allTopicsCancelled()) {
+        stop = true;
+      } else {
+        dispatch(poll());
+        holdYourHorses();
+      }
     }
 
     trace("Stopped polling");
+    pauseAll();
 
     getConsumer()
         .ifPresent(
@@ -327,14 +334,7 @@ public class KafkaPublisher<K, V> {
 
   private void stopPublishers() {
     trace("Stopping publishers");
-
-    publishers.entrySet().stream()
-        .filter(e -> !cancelled.contains(e.getKey()))
-        .forEach(
-            e -> {
-              pause(e.getKey());
-              e.getValue().complete();
-            });
+    publishers.values().stream().filter(p -> !p.cancelled()).forEach(TopicPublisher::complete);
   }
 
   private void waitForPendingCommits() {
