@@ -19,6 +19,7 @@ import static net.pincette.util.Util.tryToDoSilent;
 import static net.pincette.util.Util.tryToGetForever;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Deque;
 import java.util.List;
@@ -26,14 +27,17 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedDeque;
+import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.Flow.Publisher;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
 import net.pincette.function.SideEffect;
+import net.pincette.util.Pair;
 import net.pincette.util.State;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -59,6 +63,7 @@ public class KafkaPublisher<K, V> {
   private static final Duration RETRY = ofSeconds(5);
   private static final int WAIT_TIMEOUT = 3000;
 
+  private final Queue<Pair<String, Boolean>> backpressure = new ConcurrentLinkedQueue<>();
   private final Supplier<KafkaConsumer<K, V>> consumerSupplier;
   private final BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> eventHandler;
   private final Map<TopicPartition, OffsetAndMetadata> pendingCommits = new ConcurrentHashMap<>();
@@ -117,14 +122,14 @@ public class KafkaPublisher<K, V> {
     consumer.close();
   }
 
-  private TopicPublisher<K, V> createPublisher(final String topic) {
-    return new TopicPublisher<>(topic, recordsToCommit::addLast);
-  }
+  private List<Pair<String, Boolean>> collectBackpressure() {
+    final List<Pair<String, Boolean>> result = new ArrayList<>(backpressure.size());
 
-  private Map<String, TopicPublisher<K, V>> createPublishers() {
-    return ofNullable(topics).stream()
-        .flatMap(Set::stream)
-        .collect(toMap(t -> t, this::createPublisher));
+    while (!backpressure.isEmpty()) {
+      result.add(backpressure.remove());
+    }
+
+    return result;
   }
 
   private void commit() {
@@ -146,24 +151,26 @@ public class KafkaPublisher<K, V> {
                 .orElse(false));
   }
 
+  private TopicPublisher<K, V> createPublisher(final String topic) {
+    return new TopicPublisher<>(topic, recordsToCommit::addLast, backpressure);
+  }
+
+  private Map<String, TopicPublisher<K, V>> createPublishers() {
+    return ofNullable(topics).stream()
+        .flatMap(Set::stream)
+        .collect(toMap(t -> t, this::createPublisher));
+  }
+
   private void dispatch(final ConsumerRecords<K, V> records) {
     publishers.forEach(
-        (t, p) -> dispatch(t, p, stream(records.records(t).iterator()).collect(toList())));
+        (t, p) -> dispatch(p, stream(records.records(t).iterator()).collect(toList())));
   }
 
   private void dispatch(
-      final String topic,
-      final TopicPublisher<K, V> publisher,
-      final List<ConsumerRecord<K, V>> records) {
+      final TopicPublisher<K, V> publisher, final List<ConsumerRecord<K, V>> records) {
     if (!records.isEmpty()) {
       pendingCommits.putAll(offsets(records.stream()));
       publisher.next(records);
-    }
-
-    if (!publisher.more()) {
-      pause(topic);
-    } else {
-      resume(topic);
     }
   }
 
@@ -215,19 +222,29 @@ public class KafkaPublisher<K, V> {
     }
   }
 
+  private void pause(final String topic) {
+    getConsumer()
+        .ifPresent(
+            c -> {
+              LOGGER.fine(() -> "Pause " + topic);
+              consumer.pause(assignedPartitions(topic));
+            });
+  }
+
   private void pauseAll() {
     getConsumer().ifPresent(c -> topics.forEach(this::pause));
   }
 
-  private void pauseTopics() {
-    publishers.entrySet().stream()
-        .filter(e -> e.getValue().cancelled() || !e.getValue().more())
-        .forEach(e -> pause(e.getKey()));
-  }
-
-  private void pause(final String topic) {
-    LOGGER.fine(() -> "Pause " + topic);
-    consumer.pause(assignedPartitions(topic));
+  private void pauseOrResumeTopics() {
+    processBackpressure()
+        .forEach(
+            (topic, resume) -> {
+              if (Boolean.TRUE.equals(resume)) {
+                resume(topic);
+              } else {
+                pause(topic);
+              }
+            });
   }
 
   private Set<TopicPartition> pausedPartitions(final String topic) {
@@ -236,6 +253,11 @@ public class KafkaPublisher<K, V> {
 
   private ConsumerRecords<K, V> poll() {
     return getForever(() -> getConsumer().map(c -> c.poll(POLL_TIMEOUT)).orElse(null));
+  }
+
+  private Map<String, Boolean> processBackpressure() {
+    return collectBackpressure().stream()
+        .collect(toMap(p -> p.first, p -> p.second, (v1, v2) -> v2));
   }
 
   /**
@@ -260,14 +282,12 @@ public class KafkaPublisher<K, V> {
   }
 
   private void resume(final String topic) {
-    LOGGER.fine(() -> "Resume " + topic);
-    consumer.resume(pausedPartitions(topic));
-  }
-
-  private void resumeTopics() {
-    publishers.entrySet().stream()
-        .filter(e -> !e.getValue().cancelled() && e.getValue().more())
-        .forEach(e -> resume(e.getKey()));
+    getConsumer()
+        .ifPresent(
+            c -> {
+              LOGGER.fine(() -> "Resume " + topic);
+              c.resume(pausedPartitions(topic));
+            });
   }
 
   private void sendEvent(final ConsumerEvent event) {
@@ -303,8 +323,7 @@ public class KafkaPublisher<K, V> {
 
     while (!stop) {
       commit();
-      pauseTopics();
-      resumeTopics();
+      pauseOrResumeTopics();
 
       if (allTopicsCancelled()) {
         stop = true;
