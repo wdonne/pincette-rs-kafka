@@ -5,6 +5,7 @@ import static java.util.concurrent.CompletableFuture.completedFuture;
 import static net.pincette.rs.Commit.commit;
 import static net.pincette.rs.FlattenList.flattenList;
 import static net.pincette.rs.Mapper.map;
+import static net.pincette.rs.Pipe.pipe;
 import static net.pincette.rs.Serializer.dispatch;
 import static net.pincette.rs.kafka.Util.trace;
 import static net.pincette.util.Pair.pair;
@@ -19,7 +20,6 @@ import java.util.concurrent.Flow.Publisher;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.function.Consumer;
-import net.pincette.rs.Pipe;
 import net.pincette.util.Pair;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 
@@ -35,9 +35,7 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   private final Deque<List<ConsumerRecord<K, V>>> batches = new ArrayDeque<>(1000);
   private final Consumer<ConsumerRecord<K, V>> commit;
   private final Processor<List<ConsumerRecord<K, V>>, ConsumerRecord<K, V>> preprocessor =
-      Pipe.<List<ConsumerRecord<K, V>>, ConsumerRecord<K, V>>pipe(flattenList())
-          .then(map(Util::trace))
-          .then(commit(this::commitRecords));
+      pipe(commit(this::commitRecords)).then(flattenList()).then(map(Util::trace));
   private final String topic;
   private boolean cancelled;
   private boolean completed;
@@ -57,9 +55,9 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
     return cancelled;
   }
 
-  private CompletionStage<Boolean> commitRecords(final List<ConsumerRecord<K, V>> records) {
+  private CompletionStage<Boolean> commitRecords(final List<List<ConsumerRecord<K, V>>> records) {
     trace(() -> "Publisher for topic " + topic + " receives " + records.size() + " to commit");
-    records.forEach(commit);
+    records.forEach(l -> l.forEach(commit));
 
     return completedFuture(true);
   }
