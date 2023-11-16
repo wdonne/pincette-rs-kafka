@@ -36,7 +36,6 @@ import java.util.concurrent.Flow.Publisher;
 import java.util.function.BiConsumer;
 import java.util.function.Supplier;
 import java.util.stream.Stream;
-import net.pincette.function.SideEffect;
 import net.pincette.util.Pair;
 import net.pincette.util.State;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
@@ -133,22 +132,18 @@ public class KafkaPublisher<K, V> {
   }
 
   private void commit() {
-    getForever(
-        () ->
-            Optional.of(offsets(consumeHead(recordsToCommit)))
-                .filter(offsets -> !offsets.isEmpty())
-                .map(
-                    offsets ->
-                        SideEffect.<Boolean>run(
-                                () ->
-                                    getConsumer()
-                                        .ifPresent(
-                                            c -> {
-                                              c.commitSync(trace("Commit", offsets));
-                                              removePendingCommits(offsets);
-                                            }))
-                            .andThenGet(() -> true))
-                .orElse(false));
+    Optional.of(offsets(consumeHead(recordsToCommit)))
+        .filter(offsets -> !offsets.isEmpty())
+        .ifPresent(this::commitOffsets);
+  }
+
+  private void commitOffsets(final Map<TopicPartition, OffsetAndMetadata> offsets) {
+    getConsumer()
+        .ifPresent(
+            c -> {
+              c.commitSync(trace("Commit", offsets));
+              removePendingCommits(offsets);
+            });
   }
 
   private TopicPublisher<K, V> createPublisher(final String topic) {
@@ -227,7 +222,7 @@ public class KafkaPublisher<K, V> {
         .ifPresent(
             c -> {
               LOGGER.fine(() -> "Pause " + topic);
-              consumer.pause(assignedPartitions(topic));
+              c.pause(assignedPartitions(topic));
             });
   }
 

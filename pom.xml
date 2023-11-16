@@ -6,7 +6,7 @@
 
   <groupId>net.pincette</groupId>
   <artifactId>pincette-rs-kafka</artifactId>
-  <version>1.1.7</version>
+  <version>1.1.8</version>
   <packaging>jar</packaging>
   <name>pincette-rs-kafka</name>
   <description>Pincette Reactive Streams Kafka</description>
@@ -72,7 +72,7 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
-      <version>5.10.0</version>
+      <version>5.10.1</version>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -113,7 +113,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-javadoc-plugin</artifactId>
-        <version>3.6.0</version>
+        <version>3.6.2</version>
         <configuration>
           <additionalJOptions>
             <additionalJOption>-J-Dhttp.agent=maven-javadoc-plugin-${project.name}
@@ -122,8 +122,8 @@
           <links>
             <link>https://docs.oracle.com/en/java/javase/11/docs/api/</link>
             <link>https://www.javadoc.io/doc/net.pincette/pincette-common/2.3.5/</link>
-            <link>https://www.javadoc.io/doc/net.pincette/pincette-rs/3.4.1/</link>
-            <link>https://www.javadoc.io/doc/net.pincette/pincette-rs-streams/1.2.1/</link>
+            <link>https://www.javadoc.io/doc/net.pincette/pincette-rs/3.4.2/</link>
+            <link>https://www.javadoc.io/doc/net.pincette/pincette-rs-streams/1.2.2/</link>
           </links>
           <sourceFileExcludes>
             <sourceFileExclude>**/module-info.java</sourceFileExclude>
@@ -138,7 +138,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
-        <version>3.2.1</version>
+        <version>3.2.2</version>
         <configuration>
           <forkCount>0</forkCount>
         </configuration>
@@ -146,7 +146,7 @@
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-failsafe-plugin</artifactId>
-        <version>3.2.1</version>
+        <version>3.2.2</version>
       </plugin>
       <plugin>
         <groupId>pl.project13.maven</groupId>
