@@ -6,7 +6,6 @@ import static java.time.Duration.ofSeconds;
 import static java.util.Optional.ofNullable;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.logging.Level.SEVERE;
-import static java.util.stream.Collectors.toList;
 import static java.util.stream.Collectors.toMap;
 import static java.util.stream.Collectors.toSet;
 import static net.pincette.rs.kafka.Util.LOGGER;
@@ -157,8 +156,7 @@ public class KafkaPublisher<K, V> {
   }
 
   private void dispatch(final ConsumerRecords<K, V> records) {
-    publishers.forEach(
-        (t, p) -> dispatch(p, stream(records.records(t).iterator()).collect(toList())));
+    publishers.forEach((t, p) -> dispatch(p, stream(records.records(t).iterator()).toList()));
   }
 
   private void dispatch(
