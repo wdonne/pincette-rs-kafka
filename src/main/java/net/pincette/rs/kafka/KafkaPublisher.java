@@ -21,6 +21,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Deque;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
@@ -67,6 +68,8 @@ public class KafkaPublisher<K, V> {
   private final Map<TopicPartition, OffsetAndMetadata> pendingCommits = new ConcurrentHashMap<>();
   private final Map<String, TopicPublisher<K, V>> publishers;
   private final Deque<ConsumerRecord<K, V>> recordsToCommit = new ConcurrentLinkedDeque<>();
+  private final boolean stopImmediately;
+  private final boolean stopWhenNothingLeft;
   private final Set<String> topics;
   private final Duration throttleTime;
   private KafkaConsumer<K, V> consumer;
@@ -78,24 +81,28 @@ public class KafkaPublisher<K, V> {
    * instances.
    */
   public KafkaPublisher() {
-    this(null, null, null, null);
+    this(null, null, null, null, false, false);
   }
 
   private KafkaPublisher(
       final Supplier<KafkaConsumer<K, V>> consumer,
       final Set<String> topics,
       final BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> eventHandler,
-      final Duration throttleTime) {
+      final Duration throttleTime,
+      final boolean stopImmediately,
+      final boolean stopWhenNothingLeft) {
     this.consumerSupplier = consumer;
     this.topics = topics;
     this.eventHandler = eventHandler;
     this.throttleTime = throttleTime;
+    this.stopImmediately = stopImmediately;
+    this.stopWhenNothingLeft = stopWhenNothingLeft;
     publishers = createPublishers();
   }
 
   public static <K, V> KafkaPublisher<K, V> publisher(
       final Supplier<KafkaConsumer<K, V>> consumer) {
-    return new KafkaPublisher<>(consumer, null, null, null);
+    return new KafkaPublisher<>(consumer, null, null, null, false, false);
   }
 
   private static Set<TopicPartition> partitions(
@@ -333,7 +340,11 @@ public class KafkaPublisher<K, V> {
         .ifPresent(
             c -> {
               stopPublishers();
-              waitForPendingCommits();
+
+              if (!stopImmediately) {
+                waitForPendingCommits();
+              }
+
               close(c);
             });
   }
@@ -377,7 +388,8 @@ public class KafkaPublisher<K, V> {
    * @return A new publisher instance.
    */
   public KafkaPublisher<K, V> withConsumer(final Supplier<KafkaConsumer<K, V>> consumer) {
-    return new KafkaPublisher<>(consumer, topics, eventHandler, throttleTime);
+    return new KafkaPublisher<>(
+        consumer, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
   }
 
   /**
@@ -388,7 +400,30 @@ public class KafkaPublisher<K, V> {
    */
   public KafkaPublisher<K, V> withEventHandler(
       final BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> eventHandler) {
-    return new KafkaPublisher<>(consumerSupplier, topics, eventHandler, throttleTime);
+    return new KafkaPublisher<>(
+        consumerSupplier, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
+  }
+
+  /**
+   * Creates a publisher that doesn't wait for uncommitted messages when it is stopped.
+   *
+   * @param stopImmediately should not wait for uncommitted messages.
+   * @return A new publisher instance.
+   */
+  public KafkaPublisher<K, V> withStopImmediately(final boolean stopImmediately) {
+    return new KafkaPublisher<>(
+        consumerSupplier, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
+  }
+
+  /**
+   * Creates a publisher that stops when there are no topic partition assignments left.
+   *
+   * @param stopWhenNothingLeft stop when there are no topic partition assignments left.
+   * @return A new publisher instance.
+   */
+  public KafkaPublisher<K, V> withStopWhenNothingLeft(final boolean stopWhenNothingLeft) {
+    return new KafkaPublisher<>(
+        consumerSupplier, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
   }
 
   /**
@@ -398,7 +433,8 @@ public class KafkaPublisher<K, V> {
    * @return A new publisher instance.
    */
   public KafkaPublisher<K, V> withTopics(final Set<String> topics) {
-    return new KafkaPublisher<>(consumerSupplier, topics, eventHandler, throttleTime);
+    return new KafkaPublisher<>(
+        consumerSupplier, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
   }
 
   /**
@@ -409,7 +445,8 @@ public class KafkaPublisher<K, V> {
    * @return A new publisher instance.
    */
   public KafkaPublisher<K, V> withThrottleTime(final Duration throttleTime) {
-    return new KafkaPublisher<>(consumerSupplier, topics, eventHandler, throttleTime);
+    return new KafkaPublisher<>(
+        consumerSupplier, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
   }
 
   private class RebalanceListener implements ConsumerRebalanceListener {
@@ -421,7 +458,9 @@ public class KafkaPublisher<K, V> {
     }
 
     public void onPartitionsRevoked(final Collection<TopicPartition> partitions) {
-      // Not interested.
+      if (stopWhenNothingLeft && new HashSet<>(partitions).equals(consumer.assignment())) {
+        stop();
+      }
     }
   }
 }
