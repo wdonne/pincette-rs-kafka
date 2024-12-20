@@ -9,7 +9,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
  *
  * @param <K> the key type.
  * @param <V> the value type.
- * @author Werner Donn\u00e9
+ * @author Werner Donné
  */
 public class ToTopic<K, V> extends Mapper<ConsumerRecord<K, V>, ProducerRecord<K, V>> {
   public ToTopic(final String topic) {

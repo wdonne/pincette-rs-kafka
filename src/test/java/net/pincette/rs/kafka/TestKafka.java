@@ -253,14 +253,6 @@ class TestKafka {
         null);
   }
 
-  private void fill(final int max, final String topic) {
-    final KafkaSubscriber<String, String> subscriber =
-        new KafkaSubscriber<String, String>().withProducer(TestUtil::producer);
-
-    generator(max, topic).subscribe(subscriber);
-    subscriber.join();
-  }
-
   @Test
   @DisplayName("mongo")
   void mongo() {

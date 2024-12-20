@@ -31,7 +31,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 /**
  * Some utilities.
  *
- * @author Werner Donn\u00e9
+ * @author Werner Donné
  */
 public class Util {
   private static final Duration INTERVAL = ofSeconds(1);

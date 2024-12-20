@@ -7,5 +7,6 @@ module net.pincette.rs.kafka {
   requires java.json;
 
   opens net.pincette.rs.kafka;
+
   exports net.pincette.rs.kafka;
 }
