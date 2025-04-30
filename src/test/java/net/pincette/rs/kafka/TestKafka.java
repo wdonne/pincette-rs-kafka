@@ -159,7 +159,7 @@ class TestKafka {
   }
 
   @AfterEach
-  public void after() {
+  void after() {
     tryToDoWithRethrow(
         () -> create(COMMON_CONFIG),
         admin -> deleteTopics(topics, admin).toCompletableFuture().join());
@@ -182,7 +182,7 @@ class TestKafka {
   }
 
   @BeforeEach
-  public void before() {
+  void before() {
     tryToDoWithRethrow(
         () -> create(COMMON_CONFIG),
         admin ->
