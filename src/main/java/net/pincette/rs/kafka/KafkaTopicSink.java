@@ -9,6 +9,13 @@ import net.pincette.rs.streams.Message;
 import net.pincette.rs.streams.TopicSink;
 import org.apache.kafka.clients.producer.ProducerRecord;
 
+/**
+ * Connects Kafka topics to the <code>Streams</code> API on the producing side.
+ *
+ * @param <K> the key type.
+ * @param <V> the value type.
+ * @author Werner Donné
+ */
 public class KafkaTopicSink<K, V> implements TopicSink<K, V, ProducerRecord<K, V>> {
   private final KafkaSubscriber<K, V> subscriber;
 

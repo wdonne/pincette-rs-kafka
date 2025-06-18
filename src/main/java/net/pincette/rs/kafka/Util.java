@@ -16,10 +16,12 @@ import java.util.ArrayList;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
+import java.util.function.BiFunction;
 import java.util.function.BooleanSupplier;
 import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Logger;
+import net.pincette.rs.streams.Message;
 import net.pincette.rs.streams.TopicSink;
 import net.pincette.rs.streams.TopicSource;
 import org.apache.kafka.clients.admin.Admin;
@@ -122,9 +124,23 @@ public class Util {
     return topics -> new KafkaTopicSource<>(publisher.withTopics(topics));
   }
 
+  public static <K, V, T, U>
+      Function<Set<String>, TopicSource<T, U, ConsumerRecord<K, V>>> fromPublisherTransformed(
+          final KafkaPublisher<K, V> publisher,
+          final Function<ConsumerRecord<K, V>, Message<T, U>> transformer) {
+    return topics -> new KafkaTopicSourceTransformed<>(publisher.withTopics(topics), transformer);
+  }
+
   public static <K, V> Function<Set<String>, TopicSink<K, V, ProducerRecord<K, V>>> fromSubscriber(
       final KafkaSubscriber<K, V> subscriber) {
     return topics -> new KafkaTopicSink<>(subscriber);
+  }
+
+  public static <K, V, T, U>
+      Function<Set<String>, TopicSink<T, U, ProducerRecord<K, V>>> fromSubscriberTransformed(
+          final KafkaSubscriber<K, V> subscriber,
+          final BiFunction<String, Message<T, U>, ProducerRecord<K, V>> transformer) {
+    return topics -> new KafkaTopicSinkTransformed<>(subscriber, transformer);
   }
 
   private static CompletionStage<Set<String>> presentTopics(

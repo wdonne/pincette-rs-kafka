@@ -11,6 +11,13 @@ import net.pincette.rs.streams.Message;
 import net.pincette.rs.streams.TopicSource;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 
+/**
+ * Connects Kafka topics to the <code>Streams</code> API on the consuming side.
+ *
+ * @param <K> the key type.
+ * @param <V> the value type.
+ * @author Werner Donné
+ */
 public class KafkaTopicSource<K, V> implements TopicSource<K, V, ConsumerRecord<K, V>> {
   private final KafkaPublisher<K, V> publisher;
 
