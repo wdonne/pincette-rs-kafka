@@ -48,6 +48,7 @@ import java.util.function.Supplier;
 import net.pincette.rs.Async;
 import net.pincette.rs.Mapper;
 import net.pincette.rs.PassThrough;
+import net.pincette.rs.Serializer;
 import net.pincette.util.Pair;
 import net.pincette.util.State;
 import net.pincette.util.Util.GeneralException;
@@ -59,6 +60,7 @@ import org.bson.BsonElement;
 import org.bson.BsonInt32;
 import org.bson.BsonString;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -195,6 +197,11 @@ class TestKafka {
                     admin)
                 .toCompletableFuture()
                 .join());
+  }
+
+  @BeforeAll
+  static void beforeAll() {
+    Serializer.startPool(5);
   }
 
   @Test

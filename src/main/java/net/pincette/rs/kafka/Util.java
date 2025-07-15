@@ -3,6 +3,7 @@ package net.pincette.rs.kafka;
 import static java.lang.Integer.MAX_VALUE;
 import static java.lang.System.currentTimeMillis;
 import static java.time.Duration.ofSeconds;
+import static java.util.Optional.ofNullable;
 import static java.util.logging.Logger.getLogger;
 import static java.util.stream.Collectors.toSet;
 import static net.pincette.util.Collections.set;
@@ -14,6 +15,7 @@ import static net.pincette.util.Util.waitForCondition;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.CompletionStage;
 import java.util.function.BiFunction;
@@ -25,10 +27,13 @@ import net.pincette.rs.streams.Message;
 import net.pincette.rs.streams.TopicSink;
 import net.pincette.rs.streams.TopicSource;
 import org.apache.kafka.clients.admin.Admin;
+import org.apache.kafka.clients.admin.DeleteConsumerGroupsOptions;
 import org.apache.kafka.clients.admin.DeleteTopicsOptions;
 import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.TopicPartition;
 
 /**
  * Some utilities.
@@ -41,10 +46,20 @@ public class Util {
 
   private Util() {}
 
+  private static CompletionStage<Boolean> allAbsent(
+      final Set<String> resources, final Function<String, CompletionStage<Boolean>> test) {
+    return composeAsyncStream(resources.stream().map(test))
+        .thenApply(results -> results.reduce((r1, r2) -> r1 && r2).orElse(true));
+  }
+
+  private static CompletionStage<Boolean> allConsumerGroupsAbsent(
+      final Set<String> groupIds, final Admin admin) {
+    return allAbsent(groupIds, groupId -> consumerGroupAbsent(groupId, admin));
+  }
+
   private static CompletionStage<Boolean> allTopicsAbsent(
       final Set<String> topics, final Admin admin) {
-    return composeAsyncStream(topics.stream().map(topic -> topicAbsent(topic, admin)))
-        .thenApply(results -> results.reduce((r1, r2) -> r1 && r2).orElse(true));
+    return allAbsent(topics, topic -> topicAbsent(topic, admin));
   }
 
   private static CompletionStage<Boolean> allTopicsPresent(
@@ -56,6 +71,16 @@ public class Util {
         .thenApply(Map::keySet)
         .thenApply(t -> t.equals(topics))
         .exceptionally(e -> false);
+  }
+
+  private static CompletionStage<Boolean> consumerGroupAbsent(
+      final String groupId, final Admin admin) {
+    return admin
+        .listConsumerGroupOffsets(groupId)
+        .all()
+        .toCompletionStage()
+        .thenApply(r -> noOffsets(r, groupId))
+        .exceptionally(e -> true);
   }
 
   /**
@@ -79,6 +104,31 @@ public class Util {
                     .thenApply(r -> true),
             INTERVAL,
             e -> deleteTopics(topics.stream().map(NewTopic::name).collect(toSet()), admin))
+        .thenAccept(r -> {});
+  }
+
+  /**
+   * Completes when the consumer groups are effectively deleted.
+   *
+   * @param groupIds the given consumer groups.
+   * @param admin the Kafka admin object.
+   * @return The completion stage.
+   * @since 1.3.1
+   */
+  public static CompletionStage<Void> deleteConsumerGroups(
+      final Set<String> groupIds, final Admin admin) {
+    return tryToGetForever(
+            () ->
+                admin
+                    .deleteConsumerGroups(
+                        groupIds, new DeleteConsumerGroupsOptions().timeoutMs(MAX_VALUE))
+                    .all()
+                    .toCompletionStage()
+                    .thenApply(r -> groupIds)
+                    .thenComposeAsync(g -> waitForConsumerGroupsAbsent(g, admin))
+                    .thenApply(r -> true)
+                    .exceptionally(e -> true),
+            INTERVAL)
         .thenAccept(r -> {});
   }
 
@@ -143,6 +193,14 @@ public class Util {
     return topics -> new KafkaTopicSinkTransformed<>(subscriber, transformer);
   }
 
+  private static boolean noOffsets(
+      final Map<String, Map<TopicPartition, OffsetAndMetadata>> offsets, final String groupId) {
+    return offsets.isEmpty()
+        || ofNullable(offsets.get(groupId))
+            .filter(m -> !m.isEmpty() && m.values().stream().anyMatch(Objects::nonNull))
+            .isEmpty();
+  }
+
   private static CompletionStage<Set<String>> presentTopics(
       final Set<String> topics, final Admin admin) {
     return composeAsyncStream(
@@ -181,6 +239,11 @@ public class Util {
 
   private static CompletionStage<Boolean> waitFor(final Supplier<CompletionStage<Boolean>> check) {
     return net.pincette.util.Util.waitFor(waitForCondition(check), INTERVAL);
+  }
+
+  private static CompletionStage<Void> waitForConsumerGroupsAbsent(
+      final Set<String> groupIds, final Admin admin) {
+    return waitFor(() -> allConsumerGroupsAbsent(groupIds, admin)).thenAccept(r -> {});
   }
 
   private static CompletionStage<Void> waitForTopicsAbsent(
