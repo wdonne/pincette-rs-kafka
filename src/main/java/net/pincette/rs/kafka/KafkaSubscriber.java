@@ -355,7 +355,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
                 sending = true;
                 sendBatchPrefix(records, p);
 
-                return sendToKafka(trace("Send record", records.get(records.size() - 1)))
+                return sendToKafka(trace("Send record", records.getLast()))
                     .thenApply(
                         result -> {
                           sending = false;
