@@ -6,7 +6,7 @@ import static java.util.Optional.ofNullable;
 import static java.util.UUID.randomUUID;
 import static java.util.logging.LogManager.getLogManager;
 import static java.util.stream.Collectors.toSet;
-import static net.pincette.rs.Util.onComplete;
+import static net.pincette.rs.LambdaSubscriber.lambdaSubscriber;
 import static net.pincette.util.Collections.map;
 import static net.pincette.util.Collections.merge;
 import static net.pincette.util.Pair.pair;
@@ -140,12 +140,14 @@ class TestUtil {
 
   static Subscriber<? super Integer> testComplete(
       final Runnable stop, final AtomicInteger stopped) {
-    return onComplete(
+    return lambdaSubscriber(
+        v -> {},
         () -> {
           if (stopped.decrementAndGet() == 0) {
             stop.run();
           }
-        });
+        },
+        t -> stop.run());
   }
 
   static String topic(final String name) {

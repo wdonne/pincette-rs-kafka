@@ -9,6 +9,7 @@ import static java.time.Duration.ofSeconds;
 import static java.util.concurrent.CompletableFuture.supplyAsync;
 import static net.pincette.mongo.Collection.findOne;
 import static net.pincette.mongo.Collection.replaceOne;
+import static net.pincette.rs.Async.mapAsync;
 import static net.pincette.rs.Box.box;
 import static net.pincette.rs.Chain.with;
 import static net.pincette.rs.Pipe.pipe;
@@ -24,10 +25,12 @@ import static net.pincette.rs.kafka.Util.deleteTopics;
 import static net.pincette.util.Collections.list;
 import static net.pincette.util.Collections.set;
 import static net.pincette.util.Pair.pair;
+import static net.pincette.util.ScheduledCompletionStage.supplyAsyncAfter;
 import static net.pincette.util.Util.must;
 import static net.pincette.util.Util.tryToDoWithRethrow;
 import static org.apache.kafka.clients.admin.Admin.create;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.mongodb.client.model.ReplaceOptions;
@@ -258,6 +261,40 @@ class TestKafka {
         true,
         (start, end) -> end <= 345,
         null);
+  }
+
+  @Test
+  @DisplayName("message lag")
+  void messageLag() {
+    final State<CompletionStage<Pair<String, Integer>>> future = new State<>();
+    final State<Throwable> throwable = new State<>();
+
+    runTest(
+        1000,
+        () ->
+            box(
+                mapAsync(
+                    pair -> {
+                      final var result =
+                          supplyAsyncAfter(() -> pair(pair.first, pair.second + 1), ofSeconds(15));
+
+                      future.set(result);
+
+                      return result;
+                    }),
+                new PassThrough<>() {
+                  @Override
+                  public void onError(final Throwable t) {
+                    super.onError(t);
+                    throwable.set(t);
+                  }
+                }),
+        true,
+        (start, end) -> end < 1000,
+        null);
+
+    future.get().toCompletableFuture().join();
+    assertInstanceOf(MessageLagException.class, throwable.get());
   }
 
   @Test

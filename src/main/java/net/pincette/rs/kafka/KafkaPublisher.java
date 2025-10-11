@@ -3,9 +3,11 @@ package net.pincette.rs.kafka;
 import static java.lang.Thread.sleep;
 import static java.time.Duration.ofMillis;
 import static java.time.Duration.ofSeconds;
+import static java.time.Instant.now;
 import static java.util.Optional.ofNullable;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static java.util.logging.Level.SEVERE;
+import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toMap;
 import static java.util.stream.Collectors.toSet;
 import static net.pincette.rs.kafka.Util.LOGGER;
@@ -13,14 +15,17 @@ import static net.pincette.rs.kafka.Util.trace;
 import static net.pincette.util.Collections.consumeHead;
 import static net.pincette.util.Pair.pair;
 import static net.pincette.util.StreamUtil.stream;
+import static net.pincette.util.Triple.triple;
 import static net.pincette.util.Util.tryToDo;
 import static net.pincette.util.Util.tryToDoSilent;
 import static net.pincette.util.Util.tryToGetForever;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -58,6 +63,8 @@ import org.apache.kafka.common.TopicPartition;
  * @author Werner Donné
  */
 public class KafkaPublisher<K, V> {
+  private static final Duration DEFAULT_INACTIVITY_PERIOD = ofSeconds(10);
+  private static final int DEFAULT_MAXIMUM_MESSAGE_LAG = 50;
   private static final Duration POLL_TIMEOUT = ofMillis(100);
   private static final Duration RETRY = ofSeconds(5);
   private static final int WAIT_TIMEOUT = 3000;
@@ -65,6 +72,9 @@ public class KafkaPublisher<K, V> {
   private final Queue<Pair<String, Boolean>> backpressure = new ConcurrentLinkedQueue<>();
   private final Supplier<KafkaConsumer<K, V>> consumerSupplier;
   private final BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> eventHandler;
+  private final Duration inactivityPeriod;
+  private final Map<String, Instant> lastResumptions = new HashMap<>();
+  private final int maximumMessageLag;
   private final Map<TopicPartition, OffsetAndMetadata> pendingCommits = new ConcurrentHashMap<>();
   private final Map<String, TopicPublisher<K, V>> publishers;
   private final Deque<ConsumerRecord<K, V>> recordsToCommit = new ConcurrentLinkedDeque<>();
@@ -81,28 +91,49 @@ public class KafkaPublisher<K, V> {
    * instances.
    */
   public KafkaPublisher() {
-    this(null, null, null, null, false, false);
+    this(
+        null,
+        null,
+        null,
+        null,
+        false,
+        false,
+        DEFAULT_MAXIMUM_MESSAGE_LAG,
+        DEFAULT_INACTIVITY_PERIOD);
   }
 
+  @SuppressWarnings("java:S107") // For immutability.
   private KafkaPublisher(
       final Supplier<KafkaConsumer<K, V>> consumer,
       final Set<String> topics,
       final BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> eventHandler,
       final Duration throttleTime,
       final boolean stopImmediately,
-      final boolean stopWhenNothingLeft) {
+      final boolean stopWhenNothingLeft,
+      final int maximumMessageLag,
+      final Duration inactivityPeriod) {
     this.consumerSupplier = consumer;
     this.topics = topics;
     this.eventHandler = eventHandler;
     this.throttleTime = throttleTime;
     this.stopImmediately = stopImmediately;
     this.stopWhenNothingLeft = stopWhenNothingLeft;
+    this.maximumMessageLag = maximumMessageLag;
+    this.inactivityPeriod = inactivityPeriod;
     publishers = createPublishers();
   }
 
   public static <K, V> KafkaPublisher<K, V> publisher(
       final Supplier<KafkaConsumer<K, V>> consumer) {
-    return new KafkaPublisher<>(consumer, null, null, null, false, false);
+    return new KafkaPublisher<>(
+        consumer,
+        null,
+        null,
+        null,
+        false,
+        false,
+        DEFAULT_MAXIMUM_MESSAGE_LAG,
+        DEFAULT_INACTIVITY_PERIOD);
   }
 
   private static Set<TopicPartition> partitions(
@@ -119,6 +150,26 @@ public class KafkaPublisher<K, V> {
 
   private Set<TopicPartition> assignedPartitions(final String topic) {
     return partitions(topic, consumer.assignment());
+  }
+
+  private void checkInactivity() {
+    getConsumer()
+        .ifPresent(
+            c ->
+                c.assignment().stream()
+                    .filter(partition -> !isTopicActive(partition.topic()))
+                    .flatMap(
+                        partition ->
+                            c.currentLag(partition).stream()
+                                .filter(l -> l > maximumMessageLag)
+                                .mapToObj(l -> pair(partition, l)))
+                    .flatMap(
+                        pair ->
+                            ofNullable(publishers.get(pair.first.topic()))
+                                .map(publisher -> triple(pair.first, pair.second, publisher))
+                                .stream())
+                    .forEach(
+                        triple -> reportMessageLag(triple.third, triple.first, triple.second)));
   }
 
   private void close(final KafkaConsumer<K, V> consumer) {
@@ -153,7 +204,7 @@ public class KafkaPublisher<K, V> {
   }
 
   private TopicPublisher<K, V> createPublisher(final String topic) {
-    return new TopicPublisher<>(topic, recordsToCommit::addLast, backpressure);
+    return new TopicPublisher<>(topic, recordsToCommit::addLast, this::manageBackpressure);
   }
 
   private Map<String, TopicPublisher<K, V>> createPublishers() {
@@ -210,6 +261,16 @@ public class KafkaPublisher<K, V> {
                 pair -> pair.first,
                 pair -> pair.second,
                 (o1, o2) -> o1.offset() > o2.offset() ? o1 : o2));
+  }
+
+  private boolean isTopicActive(final String topic) {
+    return ofNullable(lastResumptions.get(topic))
+        .map(t -> t.plus(inactivityPeriod).isAfter(now()))
+        .orElse(true); // Just started.
+  }
+
+  private void manageBackpressure(final String topic, final boolean resume) {
+    backpressure.add(pair(topic, resume));
   }
 
   private void panic(final Exception exception) {
@@ -281,11 +342,28 @@ public class KafkaPublisher<K, V> {
                 .ifPresent(o -> pendingCommits.remove(k)));
   }
 
+  private void reportMessageLag(
+      final TopicPublisher<K, V> publisher, final TopicPartition partition, final long messageLag) {
+    publisher.error(
+        new MessageLagException(
+            "Partition "
+                + partition.partition()
+                + " of topic "
+                + partition.topic()
+                + " has a message lag of "
+                + messageLag
+                + ", which exceeds "
+                + maximumMessageLag
+                + " for the consumer "
+                + consumer.groupMetadata().groupId()));
+  }
+
   private void resume(final String topic) {
     getConsumer()
         .ifPresent(
             c -> {
               LOGGER.fine(() -> "Resume " + topic);
+              lastResumptions.put(topic, now());
               c.resume(pausedPartitions(topic));
             });
   }
@@ -321,6 +399,8 @@ public class KafkaPublisher<K, V> {
 
     pauseAll();
 
+    Instant lastInactivityCheck = now();
+
     while (!stop) {
       commit();
       pauseOrResumeTopics();
@@ -328,6 +408,11 @@ public class KafkaPublisher<K, V> {
       if (allTopicsCancelled()) {
         stop = true;
       } else {
+        if (maximumMessageLag != -1 && lastInactivityCheck.plus(inactivityPeriod).isBefore(now())) {
+          lastInactivityCheck = now();
+          checkInactivity();
+        }
+
         dispatch(poll());
         holdYourHorses();
       }
@@ -389,7 +474,14 @@ public class KafkaPublisher<K, V> {
    */
   public KafkaPublisher<K, V> withConsumer(final Supplier<KafkaConsumer<K, V>> consumer) {
     return new KafkaPublisher<>(
-        consumer, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
+        consumer,
+        topics,
+        eventHandler,
+        throttleTime,
+        stopImmediately,
+        stopWhenNothingLeft,
+        maximumMessageLag,
+        inactivityPeriod);
   }
 
   /**
@@ -401,7 +493,55 @@ public class KafkaPublisher<K, V> {
   public KafkaPublisher<K, V> withEventHandler(
       final BiConsumer<ConsumerEvent, KafkaConsumer<K, V>> eventHandler) {
     return new KafkaPublisher<>(
-        consumerSupplier, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
+        consumerSupplier,
+        topics,
+        eventHandler,
+        throttleTime,
+        stopImmediately,
+        stopWhenNothingLeft,
+        maximumMessageLag,
+        inactivityPeriod);
+  }
+
+  /**
+   * When a topic is paused for longer than this period, it is considered to be inactive. The
+   * default is 10 seconds.
+   *
+   * @param inactivityPeriod the inactivity period.
+   * @return A new publisher instance.
+   * @since 1.4.0
+   */
+  public KafkaPublisher<K, V> withInactivityPeriod(final Duration inactivityPeriod) {
+    return new KafkaPublisher<>(
+        consumerSupplier,
+        topics,
+        eventHandler,
+        throttleTime,
+        stopImmediately,
+        stopWhenNothingLeft,
+        maximumMessageLag,
+        inactivityPeriod);
+  }
+
+  /**
+   * The maximum allowed message lag for a topic partition while the topic is paused. When this
+   * threshold is crossed, an error signal will be sent to the corresponding topic publisher. The
+   * default is 50. The value -1 turns off this check.
+   *
+   * @param maximumMessageLag the maximum allowed message lag per partition.
+   * @return A new publisher instance.
+   * @since 1.4.0
+   */
+  public KafkaPublisher<K, V> withMaximumMessageLag(final int maximumMessageLag) {
+    return new KafkaPublisher<>(
+        consumerSupplier,
+        topics,
+        eventHandler,
+        throttleTime,
+        stopImmediately,
+        stopWhenNothingLeft,
+        maximumMessageLag,
+        inactivityPeriod);
   }
 
   /**
@@ -412,7 +552,14 @@ public class KafkaPublisher<K, V> {
    */
   public KafkaPublisher<K, V> withStopImmediately(final boolean stopImmediately) {
     return new KafkaPublisher<>(
-        consumerSupplier, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
+        consumerSupplier,
+        topics,
+        eventHandler,
+        throttleTime,
+        stopImmediately,
+        stopWhenNothingLeft,
+        maximumMessageLag,
+        inactivityPeriod);
   }
 
   /**
@@ -423,7 +570,14 @@ public class KafkaPublisher<K, V> {
    */
   public KafkaPublisher<K, V> withStopWhenNothingLeft(final boolean stopWhenNothingLeft) {
     return new KafkaPublisher<>(
-        consumerSupplier, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
+        consumerSupplier,
+        topics,
+        eventHandler,
+        throttleTime,
+        stopImmediately,
+        stopWhenNothingLeft,
+        maximumMessageLag,
+        inactivityPeriod);
   }
 
   /**
@@ -434,7 +588,14 @@ public class KafkaPublisher<K, V> {
    */
   public KafkaPublisher<K, V> withTopics(final Set<String> topics) {
     return new KafkaPublisher<>(
-        consumerSupplier, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
+        consumerSupplier,
+        topics,
+        eventHandler,
+        throttleTime,
+        stopImmediately,
+        stopWhenNothingLeft,
+        maximumMessageLag,
+        inactivityPeriod);
   }
 
   /**
@@ -446,11 +607,30 @@ public class KafkaPublisher<K, V> {
    */
   public KafkaPublisher<K, V> withThrottleTime(final Duration throttleTime) {
     return new KafkaPublisher<>(
-        consumerSupplier, topics, eventHandler, throttleTime, stopImmediately, stopWhenNothingLeft);
+        consumerSupplier,
+        topics,
+        eventHandler,
+        throttleTime,
+        stopImmediately,
+        stopWhenNothingLeft,
+        maximumMessageLag,
+        inactivityPeriod);
   }
 
   private class RebalanceListener implements ConsumerRebalanceListener {
+    private static String partitions(final Collection<TopicPartition> partitions) {
+      return partitions.stream()
+          .map(p -> "(" + p.topic() + "," + p.partition() + ")")
+          .collect(joining(", "));
+    }
+
     public void onPartitionsAssigned(final Collection<TopicPartition> partitions) {
+      LOGGER.info(
+          () ->
+              consumer.groupMetadata().groupId()
+                  + ": partitions assigned: "
+                  + partitions(partitions));
+
       if (!started) {
         started = true;
         sendEvent(ConsumerEvent.STARTED);
@@ -458,6 +638,12 @@ public class KafkaPublisher<K, V> {
     }
 
     public void onPartitionsRevoked(final Collection<TopicPartition> partitions) {
+      LOGGER.info(
+          () ->
+              consumer.groupMetadata().groupId()
+                  + ": partitions revoked: "
+                  + partitions(partitions));
+
       if (stopWhenNothingLeft && new HashSet<>(partitions).equals(consumer.assignment())) {
         stop();
       }

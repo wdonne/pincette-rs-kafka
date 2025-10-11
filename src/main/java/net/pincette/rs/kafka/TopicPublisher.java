@@ -8,19 +8,17 @@ import static net.pincette.rs.Mapper.map;
 import static net.pincette.rs.Pipe.pipe;
 import static net.pincette.rs.Serializer.dispatch;
 import static net.pincette.rs.kafka.Util.trace;
-import static net.pincette.util.Pair.pair;
 
 import java.util.ArrayDeque;
 import java.util.Deque;
 import java.util.List;
-import java.util.Queue;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Flow.Processor;
 import java.util.concurrent.Flow.Publisher;
 import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
-import net.pincette.util.Pair;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 
 /**
@@ -31,7 +29,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
  * @author Werner Donné
  */
 public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
-  private final Queue<Pair<String, Boolean>> backpressure;
+  private final BiConsumer<String, Boolean> backpressure;
   private final Deque<List<ConsumerRecord<K, V>>> batches = new ArrayDeque<>(1000);
   private final Consumer<ConsumerRecord<K, V>> commit;
   private final Processor<List<ConsumerRecord<K, V>>, ConsumerRecord<K, V>> preprocessor =
@@ -45,7 +43,7 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   TopicPublisher(
       final String topic,
       final Consumer<ConsumerRecord<K, V>> commit,
-      final Queue<Pair<String, Boolean>> backpressure) {
+      final BiConsumer<String, Boolean> backpressure) {
     this.topic = topic;
     this.commit = commit;
     this.backpressure = backpressure;
@@ -82,6 +80,10 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
     }
   }
 
+  void error(final Throwable t) {
+    preprocessor.onError(t);
+  }
+
   boolean more() {
     return more;
   }
@@ -113,7 +115,7 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
 
   private void setMore(final boolean more) {
     this.more = more;
-    backpressure.add(pair(topic, more));
+    backpressure.accept(topic, more);
   }
 
   public void subscribe(final Subscriber<? super ConsumerRecord<K, V>> subscriber) {
