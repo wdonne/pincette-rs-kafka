@@ -16,6 +16,7 @@ import static net.pincette.util.Collections.consumeHead;
 import static net.pincette.util.Pair.pair;
 import static net.pincette.util.StreamUtil.stream;
 import static net.pincette.util.Triple.triple;
+import static net.pincette.util.Util.doUntilRetry;
 import static net.pincette.util.Util.tryToDo;
 import static net.pincette.util.Util.tryToDoSilent;
 import static net.pincette.util.Util.tryToGetForever;
@@ -201,6 +202,28 @@ public class KafkaPublisher<K, V> {
               c.commitSync(trace("Commit", offsets));
               removePendingCommits(offsets);
             });
+  }
+
+  private boolean consume(final State<Instant> lastInactivityCheck) {
+    if (!stop) {
+      commit();
+      pauseOrResumeTopics();
+
+      if (allTopicsCancelled()) {
+        stop = true;
+      } else {
+        if (maximumMessageLag != -1
+            && lastInactivityCheck.get().plus(inactivityPeriod).isBefore(now())) {
+          lastInactivityCheck.set(now());
+          checkInactivity();
+        }
+
+        dispatch(poll());
+        holdYourHorses();
+      }
+    }
+
+    return stop;
   }
 
   private TopicPublisher<K, V> createPublisher(final String topic) {
@@ -397,27 +420,10 @@ public class KafkaPublisher<K, V> {
       throw new IllegalArgumentException("Can't run without topics.");
     }
 
+    final State<Instant> lastInactivityCheck = new State<>(now());
+
     pauseAll();
-
-    Instant lastInactivityCheck = now();
-
-    while (!stop) {
-      commit();
-      pauseOrResumeTopics();
-
-      if (allTopicsCancelled()) {
-        stop = true;
-      } else {
-        if (maximumMessageLag != -1 && lastInactivityCheck.plus(inactivityPeriod).isBefore(now())) {
-          lastInactivityCheck = now();
-          checkInactivity();
-        }
-
-        dispatch(poll());
-        holdYourHorses();
-      }
-    }
-
+    doUntilRetry(() -> consume(lastInactivityCheck), this::panic, RETRY);
     trace("Stopped polling");
     pauseAll();
 
