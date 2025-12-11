@@ -276,7 +276,7 @@ class TestKafka {
                 mapAsync(
                     pair -> {
                       final var result =
-                          supplyAsyncAfter(() -> pair(pair.first, pair.second + 1), ofSeconds(15));
+                          supplyAsyncAfter(() -> pair(pair.first, pair.second + 1), ofSeconds(30));
 
                       future.set(result);
 
