@@ -46,6 +46,7 @@
     <maven.compiler.target>21</maven.compiler.target>
     <maven.compiler.source>21</maven.compiler.source>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <org-lz4.lz4-java.version>1.8.1</org-lz4.lz4-java.version>
   </properties>
 
   <dependencies>
@@ -144,4 +145,13 @@
       </plugin>
     </plugins>
   </build>
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.lz4</groupId>
+        <artifactId>lz4-java</artifactId>
+        <version>${org-lz4.lz4-java.version}</version>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
 </project>
