@@ -1,3 +1,5 @@
 # Reactive Streams Utilities for Kafka
 
 This package contains some utilities to work with Kafka in a [reactive streams](https://www.reactive-streams.org) context. It provides a publisher that is backed by a Kafka consumer and a subscriber that uses a Kafka producer. At least once semantics are supported. See also the [API documentation](https://www.javadoc.io/doc/net.pincette/pincette-rs-kafka/latest/index.html).
+
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/wdonne/pincette-rs-kafka)
