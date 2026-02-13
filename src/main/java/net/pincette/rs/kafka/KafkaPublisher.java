@@ -1,5 +1,6 @@
 package net.pincette.rs.kafka;
 
+import static java.lang.Boolean.TRUE;
 import static java.lang.Thread.sleep;
 import static java.time.Duration.ofMillis;
 import static java.time.Duration.ofSeconds;
@@ -142,6 +143,11 @@ public class KafkaPublisher<K, V> {
     return partitions.stream().filter(p -> p.topic().equals(topic)).collect(toSet());
   }
 
+  private void addRecordsToCommit(final ConsumerRecord<K, V> rec) {
+    recordsToCommit.addLast(rec);
+    pendingCommits.putAll(offsets(Stream.of(rec)));
+  }
+
   private boolean allTopicsCancelled() {
     return topics.stream()
         .map(publishers::get)
@@ -175,7 +181,7 @@ public class KafkaPublisher<K, V> {
 
   private void close(final KafkaConsumer<K, V> consumer) {
     sendEvent(ConsumerEvent.STOPPED);
-    trace(() -> "Closing consumer " + consumer);
+    LOGGER.fine(() -> "Closing consumer " + consumer);
     consumer.close();
   }
 
@@ -227,7 +233,7 @@ public class KafkaPublisher<K, V> {
   }
 
   private TopicPublisher<K, V> createPublisher(final String topic) {
-    return new TopicPublisher<>(topic, recordsToCommit::addLast, this::manageBackpressure);
+    return new TopicPublisher<>(topic, this::addRecordsToCommit, this::manageBackpressure);
   }
 
   private Map<String, TopicPublisher<K, V>> createPublishers() {
@@ -243,7 +249,6 @@ public class KafkaPublisher<K, V> {
   private void dispatch(
       final TopicPublisher<K, V> publisher, final List<ConsumerRecord<K, V>> records) {
     if (!records.isEmpty()) {
-      pendingCommits.putAll(offsets(records.stream()));
       publisher.next(records);
     }
   }
@@ -300,7 +305,7 @@ public class KafkaPublisher<K, V> {
     LOGGER.log(SEVERE, exception.getMessage(), exception);
 
     if (consumer != null) {
-      trace(() -> "Closing consumer " + consumer);
+      LOGGER.fine(() -> "Closing consumer " + consumer);
       consumer.close();
       consumer = null;
     }
@@ -310,7 +315,7 @@ public class KafkaPublisher<K, V> {
     getConsumer()
         .ifPresent(
             c -> {
-              LOGGER.fine(() -> "Pause " + topic);
+              trace(() -> "Pause " + topic);
               c.pause(assignedPartitions(topic));
             });
   }
@@ -323,7 +328,7 @@ public class KafkaPublisher<K, V> {
     processBackpressure()
         .forEach(
             (topic, resume) -> {
-              if (Boolean.TRUE.equals(resume)) {
+              if (TRUE.equals(resume)) {
                 resume(topic);
               } else {
                 pause(topic);
@@ -385,7 +390,7 @@ public class KafkaPublisher<K, V> {
     getConsumer()
         .ifPresent(
             c -> {
-              LOGGER.fine(() -> "Resume " + topic);
+              trace(() -> "Resume " + topic);
               lastResumptions.put(topic, now());
               c.resume(pausedPartitions(topic));
             });
@@ -410,7 +415,7 @@ public class KafkaPublisher<K, V> {
    * either a specific request of when all the topic streams have been cancelled.
    */
   public void start() {
-    trace("Starting");
+    LOGGER.fine("Starting");
 
     if (consumerSupplier == null) {
       throw new IllegalArgumentException("Can't run without a consumer.");
@@ -424,30 +429,25 @@ public class KafkaPublisher<K, V> {
 
     pauseAll();
     doUntilRetry(() -> consume(lastInactivityCheck), this::panic, RETRY);
-    trace("Stopped polling");
+    LOGGER.fine("Stopped polling");
     pauseAll();
+    stopPublishers();
 
-    getConsumer()
-        .ifPresent(
-            c -> {
-              stopPublishers();
+    if (!stopImmediately) {
+      waitForPendingCommits();
+    }
 
-              if (!stopImmediately) {
-                waitForPendingCommits();
-              }
-
-              close(c);
-            });
+    getConsumer().ifPresent(this::close);
   }
 
   /** Signals the request to stop the publisher, which will wind down in an orderly way. */
   public void stop() {
-    trace("Stop requested");
+    LOGGER.fine("Stop requested");
     stop = true;
   }
 
   private void stopPublishers() {
-    trace("Stopping publishers");
+    LOGGER.fine("Stopping publishers");
     publishers.values().stream().filter(p -> !p.cancelled()).forEach(TopicPublisher::complete);
   }
 

@@ -1,12 +1,13 @@
 package net.pincette.rs.kafka;
 
 import static java.util.Optional.ofNullable;
+import static java.util.UUID.randomUUID;
 import static java.util.concurrent.CompletableFuture.completedFuture;
 import static net.pincette.rs.Commit.commit;
 import static net.pincette.rs.FlattenList.flattenList;
 import static net.pincette.rs.Mapper.map;
 import static net.pincette.rs.Pipe.pipe;
-import static net.pincette.rs.Serializer.dispatch;
+import static net.pincette.rs.kafka.Util.LOGGER;
 import static net.pincette.rs.kafka.Util.trace;
 
 import java.util.ArrayDeque;
@@ -19,6 +20,7 @@ import java.util.concurrent.Flow.Subscriber;
 import java.util.concurrent.Flow.Subscription;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import net.pincette.rs.Serializer;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 
 /**
@@ -37,6 +39,7 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   private final String topic;
   private boolean cancelled;
   private boolean completed;
+  private final String key = randomUUID().toString();
   private boolean more;
   private long requested;
 
@@ -63,15 +66,21 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   void complete() {
     dispatch(
         () -> {
-          trace(() -> "Completing publisher for topic " + topic);
+          LOGGER.fine(() -> "Completing publisher for topic " + topic);
           completed = true;
           sendComplete();
         });
   }
 
+  private void dispatch(final Runnable run) {
+    Serializer.dispatch(run, key);
+  }
+
   private void emit(final List<ConsumerRecord<K, V>> batch) {
-    setMore(false);
-    --requested;
+    if (--requested == 0) {
+      setMore(false);
+    }
+
     trace(() -> "Emit batch of size " + batch.size() + " from topic " + topic);
     preprocessor.onNext(batch);
 
@@ -107,10 +116,8 @@ public class TopicPublisher<K, V> implements Publisher<ConsumerRecord<K, V>> {
   }
 
   private void sendComplete() {
-    if (cancelled || (requested > 0 && batches.isEmpty())) {
-      trace(() -> "Publisher for topic " + topic + " sends onComplete");
-      preprocessor.onComplete();
-    }
+    LOGGER.fine(() -> "Publisher for topic " + topic + " sends onComplete");
+    preprocessor.onComplete();
   }
 
   private void setMore(final boolean more) {

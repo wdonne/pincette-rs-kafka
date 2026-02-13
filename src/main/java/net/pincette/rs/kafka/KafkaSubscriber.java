@@ -3,10 +3,9 @@ package net.pincette.rs.kafka;
 import static java.lang.Boolean.FALSE;
 import static java.time.Duration.ofMillis;
 import static java.time.Duration.ofSeconds;
-import static java.util.Optional.ofNullable;
+import static java.util.UUID.randomUUID;
 import static java.util.concurrent.CompletableFuture.allOf;
 import static java.util.concurrent.CompletableFuture.completedFuture;
-import static java.util.concurrent.CompletableFuture.failedFuture;
 import static java.util.logging.Level.SEVERE;
 import static net.pincette.rs.Per.per;
 import static net.pincette.rs.kafka.ProducerEvent.STOPPED;
@@ -30,8 +29,8 @@ import java.util.function.BiConsumer;
 import java.util.function.Predicate;
 import java.util.function.Supplier;
 import net.pincette.function.SideEffect;
+import net.pincette.rs.Serializer;
 import net.pincette.util.State;
-import net.pincette.util.Util.GeneralException;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.errors.RecordTooLargeException;
@@ -59,7 +58,6 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
   private final Duration timeout;
   private Subscriber<ProducerRecord<K, V>> branch;
   private KafkaProducer<K, V> producer;
-  private boolean sending;
   private Subscription subscription;
 
   public KafkaSubscriber() {
@@ -105,10 +103,6 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     return s.length() > size ? s.substring(0, size) : s;
   }
 
-  private boolean allCancelled() {
-    return allCondition(s -> s.cancelled);
-  }
-
   private boolean allCompleted() {
     return allCondition(s -> s.completed);
   }
@@ -128,30 +122,12 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     return preprocessor;
   }
 
-  private void close(boolean force) {
-    if (producer != null && (!sending || force)) {
-      final KafkaProducer<K, V> p = producer;
-
-      trace(() -> "Closing producer " + p);
-      producer = null;
-      p.close();
-    }
-  }
-
   private int completed() {
     return countCondition(s -> s.completed);
   }
 
   private int countCondition(final Predicate<InternalSubscriber> condition) {
     return (int) internalSubscribers.stream().filter(condition).count();
-  }
-
-  private Optional<KafkaProducer<K, V>> getProducer() {
-    if (producer == null && !allCancelled()) {
-      producer = producerSupplier.get();
-    }
-
-    return ofNullable(producer);
   }
 
   /** This method blocks until all the upstream publishers complete. */
@@ -183,7 +159,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
 
   private void sendEvent(final ProducerEvent event) {
     if (eventHandler != null) {
-      getProducer().ifPresent(p -> eventHandler.accept(event, p));
+      eventHandler.accept(event, producer);
     }
   }
 
@@ -224,7 +200,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
   private void stop() {
     if (allCompleted()) {
       sendEvent(STOPPED);
-      close(false);
+      producer.close();
     }
   }
 
@@ -291,12 +267,17 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     private final CompletableFuture<Void> future = new CompletableFuture<>();
     private boolean cancelled;
     private boolean completed;
+    private final String key = randomUUID().toString();
     private Subscription subscription;
 
     private void completeFuture() {
       if (completed || cancelled) {
         future.complete(null);
       }
+    }
+
+    private void dispatch(final Runnable run) {
+      Serializer.dispatch(run, key);
     }
 
     private void end() {
@@ -308,34 +289,45 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     }
 
     private void more() {
-      if (!completed && !cancelled) {
-        subscription.request(1);
-      }
+      dispatch(
+          () -> {
+            if (!completed && !cancelled) {
+              subscription.request(1);
+            }
+          });
     }
 
     public void onComplete() {
-      completed = true;
-      end();
+      dispatch(
+          () -> {
+            completed = true;
+            end();
+          });
     }
 
     public void onError(final Throwable t) {
       LOGGER.log(SEVERE, t.getMessage(), t);
       sendEvent(ProducerEvent.ERROR);
-      end();
+      dispatch(this::end);
     }
 
     public void onNext(final List<ProducerRecord<K, V>> records) {
-      if (completed) {
-        throw new GeneralException("onNext on completed stream");
-      }
-
-      trace(() -> "Sending batch of size " + records.size() + " to Kafka");
-      tryToGetForever(() -> send(records), BACKOFF, this::panic).thenAccept(r -> more());
+      dispatch(
+          () -> {
+            if (!completed) { // Completion can be enforced when the subscriber is stopped.
+              trace(() -> "Sending batch of size " + records.size() + " to Kafka");
+              tryToGetForever(() -> send(records), BACKOFF, this::panic).thenAccept(r -> more());
+            }
+          });
     }
 
     public void onSubscribe(final Subscription subscription) {
       if (this.subscription != null) {
         this.subscription.cancel();
+      }
+
+      if (producer == null) {
+        producer = producerSupplier.get();
       }
 
       this.subscription = subscription;
@@ -345,33 +337,22 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
 
     private void panic(final Exception exception) {
       LOGGER.log(SEVERE, exception.getMessage(), exception);
-      close(true);
+      producer.close();
+      producer = producerSupplier.get();
     }
 
     private CompletionStage<Boolean> send(final List<ProducerRecord<K, V>> records) {
-      return getProducer()
-          .map(
-              p -> {
-                sending = true;
-                sendBatchPrefix(records, p);
+      sendBatchPrefix(records, producer);
 
-                return sendToKafka(trace("Send record", records.getLast()))
-                    .thenApply(
-                        result -> {
-                          sending = false;
+      return sendToKafka(trace("Send record", records.getLast()))
+          .thenApply(
+              result -> {
+                if (completed) {
+                  end();
+                }
 
-                          if (completed) {
-                            end();
-                          }
-
-                          return result;
-                        });
-              })
-          .orElseGet(
-              () ->
-                  cancelled
-                      ? completedFuture(false)
-                      : failedFuture(new GeneralException("No producer")));
+                return result;
+              });
     }
 
     private void sendBatchPrefix(
@@ -388,24 +369,20 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     private CompletionStage<Boolean> sendToKafka(final ProducerRecord<K, V> rec) {
       final CompletableFuture<Boolean> completableFuture = new CompletableFuture<>();
 
-      getProducer()
-          .ifPresentOrElse(
-              p ->
-                  p.send(
-                      rec,
-                      (metadata, exception) -> {
-                        if (exception != null && !(exception instanceof RecordTooLargeException)) {
-                          panic(exception);
-                          completableFuture.complete(false);
-                        } else {
-                          if (exception != null) {
-                            reportTooLarge(rec);
-                          }
+      producer.send(
+          rec,
+          (metadata, exception) -> {
+            if (exception != null && !(exception instanceof RecordTooLargeException)) {
+              panic(exception);
+              completableFuture.complete(false);
+            } else {
+              if (exception != null) {
+                reportTooLarge(rec);
+              }
 
-                          completableFuture.complete(true);
-                        }
-                      }),
-              () -> completableFuture.completeExceptionally(new GeneralException("No producer")));
+              completableFuture.complete(true);
+            }
+          });
 
       return completableFuture;
     }
