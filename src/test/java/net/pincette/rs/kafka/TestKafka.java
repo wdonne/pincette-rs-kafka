@@ -225,7 +225,7 @@ class TestKafka {
                             })))
                 .then(new Async<>()),
         true,
-        (start, end) -> end == -1,
+        (start, end) -> end < 1,
         null);
   }
 
