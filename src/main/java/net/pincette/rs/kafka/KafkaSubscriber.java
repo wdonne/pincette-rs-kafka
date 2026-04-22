@@ -114,7 +114,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
   public Subscriber<ProducerRecord<K, V>> branch() {
     final Processor<ProducerRecord<K, V>, List<ProducerRecord<K, V>>> preprocessor =
         per(batchSize, DEFAULT_TIMEOUT);
-    final InternalSubscriber subscriber = new InternalSubscriber();
+    final InternalSubscriber subscriber = new InternalSubscriber(preprocessor::onComplete);
 
     internalSubscribers.add(subscriber);
     preprocessor.subscribe(subscriber);
@@ -164,7 +164,7 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
   }
 
   private void setCompleted() {
-    internalSubscribers.stream().filter(s -> !s.completed).forEach(InternalSubscriber::onComplete);
+    internalSubscribers.stream().filter(s -> !s.completed).forEach(s -> s.forceComplete.run());
   }
 
   /**
@@ -188,13 +188,11 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
                 }
 
                 setCompleted();
-                stop();
               });
-    } else {
-      stop();
     }
 
     join();
+    stop();
   }
 
   private void stop() {
@@ -267,8 +265,13 @@ public class KafkaSubscriber<K, V> implements Subscriber<ProducerRecord<K, V>> {
     private final CompletableFuture<Void> future = new CompletableFuture<>();
     private boolean cancelled;
     private boolean completed;
+    private final Runnable forceComplete;
     private final String key = randomUUID().toString();
     private Subscription subscription;
+
+    private InternalSubscriber(final Runnable forceComplete) {
+      this.forceComplete = forceComplete;
+    }
 
     private void completeFuture() {
       if (completed || cancelled) {
