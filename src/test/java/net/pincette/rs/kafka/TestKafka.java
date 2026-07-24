@@ -48,6 +48,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiPredicate;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.function.UnaryOperator;
 import net.pincette.rs.Async;
 import net.pincette.rs.Mapper;
 import net.pincette.rs.PassThrough;
@@ -79,7 +80,7 @@ class TestKafka {
   private final String outTopic2 = topic("outTopic2");
   private final Set<String> topics = set(inTopic1, inTopic2, outTopic1, outTopic2);
 
-  private static <T> Function<T, T> checkOrder(
+  private static <T> UnaryOperator<T> checkOrder(
       final int start, final Function<T, String> value, final String message) {
     final State<Integer> state = new State<>(start);
 
@@ -96,19 +97,19 @@ class TestKafka {
     };
   }
 
-  private static Function<ConsumerRecord<String, String>, ConsumerRecord<String, String>>
-      checkOrderConsumer(final int start, final String message) {
+  private static UnaryOperator<ConsumerRecord<String, String>> checkOrderConsumer(
+      final int start, final String message) {
     return checkOrder(start, ConsumerRecord::value, message);
   }
 
-  private static Function<ProducerRecord<String, String>, ProducerRecord<String, String>>
-      checkOrderProducer(final int start, final String message) {
+  private static UnaryOperator<ProducerRecord<String, String>> checkOrderProducer(
+      final int start, final String message) {
     return checkOrder(start, ProducerRecord::value, message);
   }
 
-  private static Function<ProducerRecord<String, String>, ProducerRecord<String, String>>
-      checkOrderProducer(final String topic, final int start, final String message) {
-    final Function<ProducerRecord<String, String>, ProducerRecord<String, String>> check =
+  private static UnaryOperator<ProducerRecord<String, String>> checkOrderProducer(
+      final String topic, final int start, final String message) {
+    final UnaryOperator<ProducerRecord<String, String>> check =
         checkOrder(start, ProducerRecord::value, message);
 
     return rec -> topic.equals(rec.topic()) ? check.apply(rec) : rec;

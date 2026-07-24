@@ -1,6 +1,7 @@
 <component name="ProjectRunConfigurationManager">
   <configuration default="false" name="Kafka" type="JUnit" factoryName="JUnit">
     <module name="pincette-rs-kafka" />
+    <useClassPathOnly />
     <extension name="software.aws.toolkits.jetbrains.core.execution.JavaAwsConnectionExtension">
       <option name="credential" />
       <option name="region" />
